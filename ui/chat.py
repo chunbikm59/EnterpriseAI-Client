@@ -17,41 +17,39 @@ load_dotenv()
 BASE_URL = None # "http://localhost:1234/v1"
 API_KEY = os.getenv("OPENAI_API_KEY")
 MODEL_SETTING = {
-    "model": "gpt-4o-mini",
+    "model": "gpt-4.1",
     "temperature": 1,
     "stream": True,
 }
 # MCP 伺服器配置 實際從資料庫中取得
 MCP_SERVERS_CONFIG = {
-    "weather_http": {
+    "我自訂的提示詞": {
+        "type": "stdio", 
+        "command": "./.venv/Scripts/python.exe",
+        "args": ["./mcp_servers/user_custom_prompt.py"],
+        "enabled": True,
+        "description": ""
+    },
+    "美國天氣查詢API": {
         "type": "http",
         "url": "http://localhost:8000/mcp-weather/mcp/",
-        # "url": "http://localhost:8123/mcp/",
-        "enabled": True,
+        "enabled": False,
         "description": "天氣查詢 HTTP MCP 伺服器範例" 
     },
-    "sequentialthinking": {
+    "Sequential Thinking": {
         "type": "stdio", 
         "command": "npx",
         "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
         "enabled": False,
         "description": "將複雜問題分解為可管理的步驟，隨著理解的加深，修改並完善想法。"
     },
-    "playwright": {
+    "Playwright 瀏覽器自動化": {
         "type": "stdio", 
         "command": "npx",
-        "args": ["-y", "@playwright/mcp@latest", "--isolated"],
+        "args": ["-y", "@playwright/mcp@latest", "--isolated", "--headless"],
         "enabled": True,
         "description": "一個使用Playwright提供瀏覽器自動化功能的模型上下文協定 (MCP) 伺服器。該伺服器使 LLM 能夠透過結構化的可訪問性快照與網頁進行交互，而無需使用螢幕截圖或視覺調整的模型。"
     },
-    # "filesystem": {
-    #     "type": "stdio", 
-    #     "command": "npx",
-    #     "args": ["-y", "@modelcontextprotocol/server-filesystem"],
-    #     "enabled": True,
-    #     "description": "Node.js server implementing Model Context Protocol (MCP) for filesystem operations."
-    # },
-    
 }
 
 def encode_image(image_path):
@@ -123,7 +121,7 @@ async def check_and_process_new_images(existing_files):
         # 更新 session 中的 message_history
         cl.user_session.set("message_history", message_history)
     
-@cl.step(name="檔案解析")
+@cl.step(name="檔案文本提取")
 async def convert_to_markdown(file_path, model="gpt-4o-mini", use_vision_model=False):
     # 根據設定決定是否使用視覺語言模型
     if use_vision_model:
@@ -139,8 +137,10 @@ async def convert_to_markdown(file_path, model="gpt-4o-mini", use_vision_model=F
 
 @cl.on_chat_start
 async def start():
+    await cl.Message(content=f'### 你好，歡迎回來!　ദ്ദി(˵ •̀ ᴗ - ˵ ) ✧').send()
     file_folder = os.path.join(os.getcwd(), '.files', cl.user_session.get('id'))
-    os.mkdir(file_folder)
+    if not os.path.exists(file_folder):
+        os.mkdir(file_folder)
     cl.user_session.set('file_folder', file_folder)
     cl.user_session.set(
         "message_history",
@@ -196,7 +196,7 @@ async def start():
             await mcp_manager.add_connection(server_name, config)
 
 async def on_mcp_connect(name, tools=[]):
-    await cl.Message(content=f'✅️ 已連線 MCP Server: {name} ').send()
+    await cl.Message(content=f'🔗 已連線 `{name}`').send()
     
     # 在設定介面中更新該MCP的選項描述
     chat_setting = cl.user_session.get('chat_setting', [])
@@ -246,7 +246,7 @@ async def setup_agent(settings):
         if is_enabled and not is_connected:
             # 需要連線但尚未連線
             await mcp_manager.add_connection(server_name, config)
-            await cl.Message(content=f"🔗 正在連線到 MCP 伺服器: {server_name}").send()
+            await cl.Message(content=f"⏳ 正在連線到 MCP 伺服器: {server_name}").send()
             
         elif not is_enabled and is_connected:
             # 需要斷線但仍在連線中
@@ -452,7 +452,7 @@ async def on_message(message: cl.Message):
     current_settings = cl.user_session.get('current_settings', {})
     use_vision_model = current_settings.get("use_vision_model", False)
     
-    file_content = [await convert_to_markdown(file.path, use_vision_model=use_vision_model) for file in message.elements if os.path.splitext(file.path)[1] in ['.pdf', '.ppt', '.pptx', '.xls', '.xlsx', '.doc', '.docx']]
+    file_content = [await convert_to_markdown(file.path, use_vision_model=use_vision_model) for file in message.elements if os.path.splitext(file.name)[1] in ['.pdf', '.ppt', '.pptx', '.xls', '.xlsx', '.doc', '.docx']]
 
     for content in file_content:
         new_message['content'].append(
