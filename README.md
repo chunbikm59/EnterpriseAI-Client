@@ -21,7 +21,7 @@
 - ✅ **圖片與文件解析**  
   支援 `.pdf`, `.docx`, `.pptx`, `.xlsx` 等企業文書常見格式，自動轉為 Markdown 供 AI 理解。
 
-- ✅ **自定義 Prompt 動態註冊**  
+- ✅ **自定義 Prompt 動態註冊成 MCP Tool**  
   透過 `user_custom_prompt.py` 讓使用者可以動態註冊自定義的 prompt 成為 MCP 工具，模型可根據情境自動選擇相關的 prompt 來理解複雜流程。
 
 - ⏳ **多媒體語音轉文字（STT）**  
