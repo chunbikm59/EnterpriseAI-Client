@@ -2,7 +2,6 @@ from fastapi import FastAPI
 import uvicorn
 from chainlit.utils import mount_chainlit
 import contextlib
-from routers import chainlit as chainlit_router
 from mcp_servers import (
     buildin
 )
