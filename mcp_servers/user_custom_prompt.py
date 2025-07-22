@@ -1,16 +1,5 @@
 import re
-import argparse
-from typing import Any
-import asyncio
-import json
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp import Context
-import requests
-from datetime import datetime
-import argparse
-import httpx
-import uvicorn
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP, Context
 
 mcp = FastMCP(name="user_custom_prompt", json_response=False, stateless_http=False)
 

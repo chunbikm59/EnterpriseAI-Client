@@ -2,22 +2,23 @@ from fastapi import FastAPI
 import uvicorn
 from chainlit.utils import mount_chainlit
 import contextlib
+from routers import chainlit as chainlit_router
 from mcp_servers import (
-    weather,
-    user_custom_prompt
+    buildin
 )
+buildin_app = buildin.mcp.http_app(path='/mcp')
 # Create a combined lifespan to manage both session managers
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
     async with contextlib.AsyncExitStack() as stack:
-        await stack.enter_async_context(weather.mcp.session_manager.run())
-        await stack.enter_async_context(user_custom_prompt.mcp.session_manager.run())
+        # 使用 AsyncExitStack 來管理多個 async context managers
+        await stack.enter_async_context(buildin_app.lifespan(app))
         yield
 
 
 app = FastAPI(lifespan=lifespan)
-app.mount("/mcp-weather", weather.mcp.streamable_http_app())
-app.mount("/mcp-user-custom-prompt", user_custom_prompt.mcp.streamable_http_app())
+app.include_router(chainlit_router.router, prefix="/chainlit", tags=["Chainlit"])
+app.mount("/mcp-buildin", buildin_app)
 mount_chainlit(app=app, target="ui/chat.py", path="/")
 
 if __name__ == '__main__':

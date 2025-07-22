@@ -10,6 +10,7 @@ import io
 from markitdown import MarkItDown
 import datetime
 from dotenv import load_dotenv
+import asyncio
 from utils.mcp_manager import MCPConnectionManager
 load_dotenv()
 
@@ -23,33 +24,51 @@ MODEL_SETTING = {
 }
 # MCP 伺服器配置 實際從資料庫中取得
 MCP_SERVERS_CONFIG = {
-    "我自訂的提示詞": {
-        "type": "stdio", 
+    "user_custom_prompt": {
+        "name": '我自訂的提示詞',
+        "transport": "stdio", 
         "command": "./.venv/Scripts/python.exe",
         "args": ["./mcp_servers/user_custom_prompt.py"],
         "enabled": True,
         "description": ""
     },
-    "美國天氣查詢API": {
-        "type": "http",
-        "url": "http://localhost:8000/mcp-weather/mcp/",
-        "enabled": False,
-        "description": "天氣查詢 HTTP MCP 伺服器範例" 
+    "buildin": {
+        "name": '內建工具組',
+        # "transport": "stdio", 
+        "transport": "http",
+        "command": "./.venv/Scripts/python.exe",
+        "args": ["./mcp_servers/buildin_http.py"],
+        "url": "http://localhost:8000/mcp-buildin/mcp/",
+        "enabled": True,
+        "description": ""
     },
-    "Sequential Thinking": {
-        "type": "stdio", 
+    "sequentialthinking": {
+        "name": "Sequential Thinking",
+        "transport": "stdio", 
         "command": "npx",
         "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
         "enabled": False,
         "description": "將複雜問題分解為可管理的步驟，隨著理解的加深，修改並完善想法。"
     },
-    "Playwright 瀏覽器自動化": {
-        "type": "stdio", 
+    "playwright": {
+        "name": "瀏覽器自動化",
+        "transport": "stdio", 
         "command": "npx",
-        "args": ["-y", "@playwright/mcp@latest", "--isolated", "--headless"],
+        "args": ["-y", "@playwright/mcp@latest", "--isolated", "--headless", "--viewport-size=1920, 1080"],
         "enabled": True,
         "description": "一個使用Playwright提供瀏覽器自動化功能的模型上下文協定 (MCP) 伺服器。該伺服器使 LLM 能夠透過結構化的可訪問性快照與網頁進行交互，而無需使用螢幕截圖或視覺調整的模型。"
     },
+    "tavily": {
+        "name": "網路搜尋",
+        "transport": "stdio", 
+        "command": "npx",
+        "args": ["-y", "tavily-mcp@0.1.3"],
+        "env": {
+            "TAVILY_API_KEY": os.getenv('TAVILY_API_KEY')
+        },
+        "enabled": True,
+        "description": "一個使用Playwright提供瀏覽器自動化功能的模型上下文協定 (MCP) 伺服器。該伺服器使 LLM 能夠透過結構化的可訪問性快照與網頁進行交互，而無需使用螢幕截圖或視覺調整的模型。"
+    }
 }
 
 def encode_image(image_path):
@@ -167,26 +186,35 @@ async def start():
             description='啟用後，在解析檔案如PDF、PPT時 MarkItDown 將使用 GPT-4o-mini 等視覺語言模型來分析和描述檔案中的圖片內容，提供更詳細的圖片說明。但會增加額外的處理時間與 Token 費用'
         )
     )
-
+    # playwright 設定
     if "playwright" in MCP_SERVERS_CONFIG:
-        MCP_SERVERS_CONFIG.get('playwright')['args'] += [f"--output-dir={file_folder}"] # f"--storage-state={file_folder}", 
+        # 設定輸出位置到本次對話專屬資料夾中
+        MCP_SERVERS_CONFIG['playwright']['args'] += [f"--output-dir={file_folder}"] # f"--storage-state={file_folder}", 
+        # MCP_SERVERS_CONFIG['playwright']['env'] = MCP_SERVERS_CONFIG['playwright'].get('env', []) + [f'PLAYWRIGHT_BROWSERS_PATH={file_folder}']
+    
     if 'filesystem' in MCP_SERVERS_CONFIG:
         MCP_SERVERS_CONFIG.get('filesystem')['args'].append(file_folder)
+
+    if 'buildin' in MCP_SERVERS_CONFIG:
+        if not MCP_SERVERS_CONFIG['buildin'].get('env'):
+            MCP_SERVERS_CONFIG['buildin']['env'] = {}
+        MCP_SERVERS_CONFIG['buildin']['env']['ROOT_FOLDER'] = file_folder
 
     # 新增 MCP 伺服器設定選項
     for server_name, config in MCP_SERVERS_CONFIG.items():
         settings_widgets.append(
             Switch(
                 id=f"mcp_{server_name}",
-                label=f"MCP - {server_name}",
+                label=f"MCP - {config['name']}",
                 initial=config['enabled']
             )
         )
     
     settings = await cl.ChatSettings(settings_widgets).send()
     cl.user_session.set('chat_setting', settings_widgets)
+    cl.user_session.set('current_settings', settings)
 
-    mcp_manager = MCPConnectionManager(config=MCP_SERVERS_CONFIG, on_connect=on_mcp_connect)
+    mcp_manager = MCPConnectionManager(id=cl.user_session.get('id'), config=MCP_SERVERS_CONFIG, on_connect=on_mcp_connect)
     cl.user_session.set('mcp_manager', mcp_manager)
     
     # 根據初始設定連線已啟用的伺服器
@@ -196,7 +224,7 @@ async def start():
             await mcp_manager.add_connection(server_name, config)
 
 async def on_mcp_connect(name, tools=[]):
-    await cl.Message(content=f'🔗 已連線 `{name}`').send()
+    await cl.Message(content=f'🔗 已連線 `{MCP_SERVERS_CONFIG[name]['name']}`').send()
     
     # 在設定介面中更新該MCP的選項描述
     chat_setting = cl.user_session.get('chat_setting', [])
@@ -215,9 +243,12 @@ async def end():
         await mcp_manager.shutdown()
         
 @cl.on_settings_update
-async def setup_agent(settings):
+async def on_settings_update(settings):
     """處理設定變更，連線或斷線 MCP 伺服器"""
     print("設定已更新:", settings)
+    
+    # 先取得舊的設定值用於比較
+    previous_settings = cl.user_session.get('current_settings', {})
     
     # 儲存當前設定到 session 中
     cl.user_session.set('current_settings', settings)
@@ -232,10 +263,14 @@ async def setup_agent(settings):
 
     # 處理視覺語言模型設定變更
     use_vision_model = settings.get("use_vision_model", False)
-    if use_vision_model:
-        await cl.Message(content="✅ 已啟用視覺語言模型來描述檔案中的圖片").send()
-    else:
-        await cl.Message(content="❌ 已停用檔案解析的圖片描述功能").send()
+    previous_use_vision_model = previous_settings.get("use_vision_model", False)
+    
+    # 只有在設定真正改變時才發送通知
+    if use_vision_model != previous_use_vision_model:
+        if use_vision_model:
+            await cl.Message(content="已啟用視覺語言模型來描述檔案中的圖片").send()
+        else:
+            await cl.Message(content="已停用檔案解析的圖片描述功能").send()
 
     # 處理每個 MCP 伺服器的設定變更
     for server_name, config in MCP_SERVERS_CONFIG.items():
@@ -278,9 +313,7 @@ async def execute_tool(tool_name: str, tool_input: Dict[str, Any]):
         return {"error": f"Tool '{tool_name}' not found in any connected MCP server"}
 
     try:
-        # 使用我們的 MCP 連線管理器呼叫工具
         result = await mcp_manager.call_tool(mcp_name, tool_name, tool_input)
-
         return result
     except Exception as e:
         return {"error": f"Error calling tool '{tool_name}': {str(e)}"}
@@ -336,7 +369,7 @@ async def process_llm_response(message_history, initial_msg=None):
         openai_tools = await format_tools_for_openai(all_tools)
         chat_params["tools"] = openai_tools
         chat_params["tool_choice"] = "auto"
-        print("Tools passed:", openai_tools)
+        # print("Tools passed:", openai_tools)
 
     # 用於 streaming 回覆
     msg_obj = initial_msg or cl.Message(content="")
@@ -375,8 +408,34 @@ async def process_llm_response(message_history, initial_msg=None):
 
         # 如果有 tool call，執行工具並將結果加入歷史，然後 loop 再丟給 LLM
         if tool_calls:
-            for tool_call in tool_calls:
+            # 生成一致的 tool_call_id 基礎值
+            base_call_id = len(message_history)
+            
+            # 先將 assistant 的 tool_calls 訊息加入歷史
+            tool_calls_formatted = []
+            for i, tool_call in enumerate(tool_calls):
+                tool_call_id = f"call_{base_call_id}_{i}"
+                tool_calls_formatted.append({
+                    "id": tool_call_id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_call["name"],
+                        "arguments": tool_call["arguments"],
+                    },
+                })
+            
+            # 先加入 assistant 訊息（包含所有 tool_calls）
+            message_history.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": tool_calls_formatted,
+            })
+            
+            # 執行每個工具並加入對應的 tool 回應
+            for i, tool_call in enumerate(tool_calls):
                 tool_name = tool_call["name"]
+                tool_call_id = f"call_{base_call_id}_{i}"
+                
                 # 記錄工具執行前的檔案狀態
                 file_folder = cl.user_session.get('file_folder')
                 existing_files = set()
@@ -385,44 +444,42 @@ async def process_llm_response(message_history, initial_msg=None):
                 try:
                     tool_args = json.loads(tool_call["arguments"])
 
-                    # Add the tool call to message history
-                    message_history.append(
-                        {
-                            "role": "assistant",
-                            "content": None,
-                            "tool_calls": [
-                                {
-                                    "id": f"call_{len(message_history)}",
-                                    "type": "function",
-                                    "function": {
-                                        "name": tool_name,
-                                        "arguments": tool_call["arguments"],
-                                    },
-                                }
-                            ],
-                        }
-                    )
-
                     # Execute the tool in a step
                     tool_result = await execute_tool(tool_name, tool_args)
-
+                    
                     # Format the tool result content
                     tool_result_content = format_calltoolresult_content(tool_result)
-
-                    # Add the tool result to message history
-                    message_history.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": f"call_{len(message_history)-1}",
-                            "content": tool_result_content,
-                        }
-                    )
+                    
+                    # 只加入 tool 回應訊息
+                    message_history.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": tool_result_content,
+                    })
+                    
                     # 檢查是否有新的圖片檔案產生
                     await check_and_process_new_images(existing_files)
+                except asyncio.CancelledError:
+                    # 用戶主動中斷，加入中斷訊息到歷史中
+                    error_msg = f"Tool {tool_name} was cancelled by user"
+                    message_history.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": error_msg,
+                    })
+                    # 重新拋出 CancelledError 以便上層處理
+                    raise
                 except Exception as e:
                     error_msg = f"Error executing tool {tool_name}: {str(e)}"
                     error_message = cl.Message(content=error_msg)
                     await error_message.send()
+                    
+                    # 即使工具執行失敗，也要加入錯誤回應到歷史中
+                    message_history.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": error_msg,
+                    })
             # 有 tool call，繼續 while loop（再丟給 LLM）
             # 並用新的 cl.Message 物件做 streaming
             msg_obj = cl.Message(content="")
