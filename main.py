@@ -16,7 +16,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
-app.include_router(chainlit_router.router, prefix="/chainlit", tags=["Chainlit"])
 app.mount("/mcp-buildin", buildin_app)
 mount_chainlit(app=app, target="ui/chat.py", path="/")
 
