@@ -14,7 +14,7 @@ from pydub import AudioSegment
 from pydantic import Field
 import asyncio
 import aiofiles
-from openai import AsyncOpenAI
+from utils.llm_client import get_llm_client, get_model_setting
 
 mcp = FastMCP(name="buildin_tools", json_response=False, stateless_http=False)
 
@@ -102,9 +102,7 @@ async def transcription(
 ):
     '''將本次對話資料夾中的影音檔轉錄成文字稿'''
     root_folder = await get_conversation_folder(ctx)
-    # 初始化 OpenAI 客戶端
-    client = AsyncOpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-    
+
     # 構建完整檔案路徑
     file_path = os.path.join(root_folder, filename)
     
@@ -157,15 +155,15 @@ async def transcription(
         # 如果壓縮失敗，使用原始檔案
         transcription_file = file_path
     
-    # 初始化 OpenAI 客戶端
-    client = AsyncOpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-
     # 非同步讀取檔案並包成 BytesIO，因為 API 需要 file-like object
     async with aiofiles.open(transcription_file, 'rb') as f:
         audio_bytes = await f.read()
     audio_file_obj = io.BytesIO(audio_bytes)
     audio_file_obj.name = os.path.basename(transcription_file)  # 必須有檔名屬性
-
+    
+    # 初始化 OpenAI 客戶端
+    client = get_llm_client(provider='openai', api_key=os.getenv('LLM_API_KEY'))
+    
     # 呼叫 Whisper API（非同步）
     transcript = await client.audio.transcriptions.create(
         model="whisper-1",
@@ -352,7 +350,7 @@ async def download_youtube(
         ydl = YoutubeDL(ydl_opts)
         await ctx.info("Starting: 取影片資訊")
 
-        info = await asyncio.to_thread(ydl.extract_info, url, False)
+        info = await asyncio.to_thread(ydl.extract_info, url, download=False)
         video_title = info.get('title', 'Unknown')
 
         await asyncio.to_thread(ydl.download, [url])

@@ -1,4 +1,5 @@
-from openai import AsyncOpenAI, OpenAI
+from utils.llm_client import get_llm_client, get_model_setting
+from utils.mcp_servers_config import get_mcp_servers_config
 import chainlit as cl
 from chainlit.input_widget import Select, Switch
 from typing import Dict, Any, List, Optional
@@ -9,87 +10,36 @@ import base64
 import io
 from markitdown import MarkItDown
 import datetime
-from dotenv import load_dotenv
 import asyncio
 from utils.mcp_manager import MCPConnectionManager
-load_dotenv()
 
-# 可替換成本地模型，比如使用 LM Studio 的 API
-BASE_URL = None # "http://localhost:1234/v1"
-API_KEY = os.getenv("OPENAI_API_KEY")
-MODEL_SETTING = {
-    "model": "gpt-4.1",
-    "temperature": 1,
-    "stream": True,
-}
-# MCP 伺服器配置 實際從資料庫中取得
-MCP_SERVERS_CONFIG = {
-    "user_custom_prompt": {
-        "name": '我自訂的提示詞',
-        "transport": "stdio", 
-        "command": "./.venv/Scripts/python.exe",
-        "args": ["./mcp_servers/user_custom_prompt.py"],
-        "enabled": True,
-        "description": ""
-    },
-    "buildin": {
-        "name": '內建工具組',
-        # "transport": "stdio", 
-        "transport": "http",
-        "command": "./.venv/Scripts/python.exe",
-        "args": ["./mcp_servers/buildin_http.py"],
-        "url": "http://localhost:8000/mcp-buildin/mcp/",
-        "enabled": True,
-        "description": ""
-    },
-    "sequentialthinking": {
-        "name": "Sequential Thinking",
-        "transport": "stdio", 
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
-        "enabled": False,
-        "description": "將複雜問題分解為可管理的步驟，隨著理解的加深，修改並完善想法。"
-    },
-    "playwright": {
-        "name": "瀏覽器自動化",
-        "transport": "stdio", 
-        "command": "npx",
-        "args": ["-y", "@playwright/mcp@latest", "--isolated", "--headless", "--viewport-size=1920, 1080"],
-        "enabled": True,
-        "description": "一個使用Playwright提供瀏覽器自動化功能的模型上下文協定 (MCP) 伺服器。該伺服器使 LLM 能夠透過結構化的可訪問性快照與網頁進行交互，而無需使用螢幕截圖或視覺調整的模型。"
-    },
-    "tavily": {
-        "name": "網路搜尋",
-        "transport": "stdio", 
-        "command": "npx",
-        "args": ["-y", "tavily-mcp@0.1.3"],
-        "env": {
-            "TAVILY_API_KEY": os.getenv('TAVILY_API_KEY')
-        },
-        "enabled": True,
-        "description": "一個使用Playwright提供瀏覽器自動化功能的模型上下文協定 (MCP) 伺服器。該伺服器使 LLM 能夠透過結構化的可訪問性快照與網頁進行交互，而無需使用螢幕截圖或視覺調整的模型。"
-    }
-}
-
-def encode_image(image_path):
-    with open(image_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode('utf-8')
+async def encode_image(image_path):
+    """非同步編碼圖片為 base64，使用 aiofiles 進行非同步檔案讀取"""
+    import aiofiles
+    async with aiofiles.open(image_path, "rb") as image_file:
+        image_data = await image_file.read()
+        result = await asyncio.to_thread(base64.b64encode, image_data)
+    return result.decode('utf-8')
 
 async def check_and_process_new_images(existing_files):
     """檢查並處理工具生成的新圖片檔案"""
     file_folder = cl.user_session.get('file_folder')
-    if not file_folder or not os.path.exists(file_folder):
+    if not file_folder or not await asyncio.to_thread(os.path.exists, file_folder):
         return
     
     # 支援的圖片格式
     image_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg'}
     
     # 取得當前檔案列表
-    current_files = set(os.listdir(file_folder))
+    current_files = set(await asyncio.to_thread(os.listdir, file_folder))
     new_files = current_files - existing_files
     
     # 篩選出新的圖片檔案
-    new_images = [f for f in new_files if os.path.splitext(f.lower())[1] in image_extensions]
+    new_images = []
+    for f in new_files:
+        filename, extension = await asyncio.to_thread(os.path.splitext, f.lower())
+        if extension in image_extensions:
+            new_images.append(f)        
     
     if not new_images:
         return
@@ -101,27 +51,24 @@ async def check_and_process_new_images(existing_files):
     for image_file in new_images:
         image_path = os.path.join(file_folder, image_file)
         
-        try:
-            # 創建圖片元素
-            image_element = cl.Image(
-                name=image_file,
-                path=image_path,
-                display="inline"
-            )
-            image_elements.append(image_element)
-            
-            # 將圖片加入到內容中
-            image_content.append({
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/jpeg;base64,{encode_image(image_path)}",
-                    "detail": "high"
-                }
-            })
-            
-        except Exception as e:
-            print(f"處理圖片 {image_file} 時發生錯誤: {str(e)}")
-    
+        # 創建圖片元素
+        image_element = cl.Image(
+            name=image_file,
+            path=image_path,
+            display="inline"
+        )
+        image_elements.append(image_element)
+        
+        # 將圖片加入到內容中
+        image_content.append({
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:image/jpeg;base64,{await encode_image(image_path)}",
+                "detail": "high"
+            }
+        })
+        
+
     # 一次發送所有圖片到 UI
     if image_elements:
         await cl.Message(
@@ -136,7 +83,6 @@ async def check_and_process_new_images(existing_files):
             "content": image_content
         }
         message_history.append(image_message)
-        
         # 更新 session 中的 message_history
         cl.user_session.set("message_history", message_history)
     
@@ -144,12 +90,13 @@ async def check_and_process_new_images(existing_files):
 async def convert_to_markdown(file_path, model="gpt-4o-mini", use_vision_model=False):
     # 根據設定決定是否使用視覺語言模型
     if use_vision_model:
-        client = OpenAI(base_url=BASE_URL, api_key=API_KEY)  # 使用同步客戶端
+        client = get_llm_client(mode="sync")
         md = MarkItDown(enable_plugins=True, llm_client=client, llm_model=model)
     else:
         md = MarkItDown(enable_plugins=True)
     
-    result = md.convert(file_path)    
+    # 將同步的 md.convert 包裝成非同步呼叫
+    result = await asyncio.to_thread(md.convert, file_path)
     
     return result.text_content
 
@@ -157,9 +104,9 @@ async def convert_to_markdown(file_path, model="gpt-4o-mini", use_vision_model=F
 @cl.on_chat_start
 async def start():
     await cl.Message(content=f'### 你好，歡迎回來!　ദ്ദി(˵ •̀ ᴗ - ˵ ) ✧').send()
-    file_folder = os.path.join(os.getcwd(), '.files', cl.user_session.get('id'))
-    if not os.path.exists(file_folder):
-        os.mkdir(file_folder)
+    file_folder = await asyncio.to_thread(os.path.join, os.getcwd(), '.files', cl.user_session.get('id'))
+    if not await asyncio.to_thread(os.path.exists, file_folder):
+        await asyncio.to_thread(os.mkdir, file_folder)
     cl.user_session.set('file_folder', file_folder)
     cl.user_session.set(
         "message_history",
@@ -187,21 +134,20 @@ async def start():
         )
     )
     # playwright 設定
-    if "playwright" in MCP_SERVERS_CONFIG:
-        # 設定輸出位置到本次對話專屬資料夾中
-        MCP_SERVERS_CONFIG['playwright']['args'] += [f"--output-dir={file_folder}"] # f"--storage-state={file_folder}", 
-        # MCP_SERVERS_CONFIG['playwright']['env'] = MCP_SERVERS_CONFIG['playwright'].get('env', []) + [f'PLAYWRIGHT_BROWSERS_PATH={file_folder}']
+    mcp_config = get_mcp_servers_config(file_folder)
+    if "playwright" in mcp_config:
+        mcp_config['playwright']['args'] += [f"--output-dir={file_folder}"]
     
-    if 'filesystem' in MCP_SERVERS_CONFIG:
-        MCP_SERVERS_CONFIG.get('filesystem')['args'].append(file_folder)
+    if 'filesystem' in mcp_config:
+        mcp_config.get('filesystem')['args'].append(file_folder)
 
-    if 'buildin' in MCP_SERVERS_CONFIG:
-        if not MCP_SERVERS_CONFIG['buildin'].get('env'):
-            MCP_SERVERS_CONFIG['buildin']['env'] = {}
-        MCP_SERVERS_CONFIG['buildin']['env']['ROOT_FOLDER'] = file_folder
+    if 'buildin' in mcp_config:
+        if not mcp_config['buildin'].get('env'):
+            mcp_config['buildin']['env'] = {}
+        mcp_config['buildin']['env']['ROOT_FOLDER'] = file_folder
 
     # 新增 MCP 伺服器設定選項
-    for server_name, config in MCP_SERVERS_CONFIG.items():
+    for server_name, config in mcp_config.items():
         settings_widgets.append(
             Switch(
                 id=f"mcp_{server_name}",
@@ -214,17 +160,20 @@ async def start():
     cl.user_session.set('chat_setting', settings_widgets)
     cl.user_session.set('current_settings', settings)
 
-    mcp_manager = MCPConnectionManager(id=cl.user_session.get('id'), config=MCP_SERVERS_CONFIG, on_connect=on_mcp_connect)
+    # 確保每個會話都有唯一的 MCP 管理器實例
+    session_id = cl.user_session.get('id')
+    mcp_manager = MCPConnectionManager(id=session_id, config=mcp_config, on_connect=on_mcp_connect)
     cl.user_session.set('mcp_manager', mcp_manager)
     
     # 根據初始設定連線已啟用的伺服器
-    for server_name, config in MCP_SERVERS_CONFIG.items():
+    for server_name, config in mcp_config.items():
         setting_key = f"mcp_{server_name}"
         if settings.get(setting_key, config.get('enabled', False)):
             await mcp_manager.add_connection(server_name, config)
 
 async def on_mcp_connect(name, tools=[]):
-    await cl.Message(content=f'🔗 已連線 `{MCP_SERVERS_CONFIG[name]['name']}`').send()
+    mcp_config = get_mcp_servers_config(cl.user_session.get('file_folder'))
+    await cl.Message(content=f'🔗 已連線 `{mcp_config[name]['name']}`').send()
     
     # 在設定介面中更新該MCP的選項描述
     chat_setting = cl.user_session.get('chat_setting', [])
@@ -273,7 +222,8 @@ async def on_settings_update(settings):
             await cl.Message(content="已停用檔案解析的圖片描述功能").send()
 
     # 處理每個 MCP 伺服器的設定變更
-    for server_name, config in MCP_SERVERS_CONFIG.items():
+    mcp_config = get_mcp_servers_config(cl.user_session.get('file_folder'))
+    for server_name, config in mcp_config.items():
         setting_key = f"mcp_{server_name}"
         is_enabled = settings.get(setting_key, False)
         is_connected = mcp_manager.is_connected(server_name)
@@ -358,24 +308,23 @@ async def process_llm_response(message_history, initial_msg=None):
     """
     處理 LLM 回答與遞迴工具呼叫，直到沒有 tool call 為止。
     """
-    client = AsyncOpenAI(base_url=BASE_URL, api_key=API_KEY)
+    llm_client = get_llm_client(mode="async")
     mcp_tools = cl.user_session.get("mcp_manager").tools
     all_tools = []
     for connection_tools in mcp_tools.values():
         all_tools.extend(connection_tools)
 
-    chat_params = {**MODEL_SETTING}
+    chat_params = get_model_setting()
     if all_tools:
         openai_tools = await format_tools_for_openai(all_tools)
         chat_params["tools"] = openai_tools
         chat_params["tool_choice"] = "auto"
-        # print("Tools passed:", openai_tools)
 
     # 用於 streaming 回覆
     msg_obj = initial_msg or cl.Message(content="")
 
     while True:
-        stream = await client.chat.completions.create(
+        stream = await llm_client.chat.completions.create(
             messages=message_history, **chat_params
         )
 
@@ -383,6 +332,8 @@ async def process_llm_response(message_history, initial_msg=None):
         tool_calls = []
 
         async for chunk in stream:
+            if not chunk.choices:
+                continue
             delta = chunk.choices[0].delta
             print(delta)
 
@@ -405,6 +356,7 @@ async def process_llm_response(message_history, initial_msg=None):
         # 如果有 assistant 回覆內容，加入歷史
         if response_text.strip():
             message_history.append({"role": "assistant", "content": response_text})
+            cl.user_session.set("message_history", message_history)
 
         # 如果有 tool call，執行工具並將結果加入歷史，然後 loop 再丟給 LLM
         if tool_calls:
@@ -430,7 +382,7 @@ async def process_llm_response(message_history, initial_msg=None):
                 "content": None,
                 "tool_calls": tool_calls_formatted,
             })
-            
+            cl.user_session.set("message_history", message_history)
             # 執行每個工具並加入對應的 tool 回應
             for i, tool_call in enumerate(tool_calls):
                 tool_name = tool_call["name"]
@@ -439,8 +391,11 @@ async def process_llm_response(message_history, initial_msg=None):
                 # 記錄工具執行前的檔案狀態
                 file_folder = cl.user_session.get('file_folder')
                 existing_files = set()
-                if file_folder and os.path.exists(file_folder):
-                    existing_files = set(os.listdir(file_folder))                
+                if file_folder and await asyncio.to_thread(os.path.exists, file_folder):
+                    existing_files = set(await asyncio.to_thread(os.listdir, file_folder))
+                
+                tool_result_content = None
+                
                 try:
                     tool_args = json.loads(tool_call["arguments"])
 
@@ -449,37 +404,32 @@ async def process_llm_response(message_history, initial_msg=None):
                     
                     # Format the tool result content
                     tool_result_content = format_calltoolresult_content(tool_result)
+
                     
-                    # 只加入 tool 回應訊息
-                    message_history.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "content": tool_result_content,
-                    })
-                    
-                    # 檢查是否有新的圖片檔案產生
-                    await check_and_process_new_images(existing_files)
                 except asyncio.CancelledError:
                     # 用戶主動中斷，加入中斷訊息到歷史中
-                    error_msg = f"Tool {tool_name} was cancelled by user"
-                    message_history.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "content": error_msg,
-                    })
-                    # 重新拋出 CancelledError 以便上層處理
-                    raise
+                    tool_result_content = f"Tool {tool_name} was cancelled by user"
+
                 except Exception as e:
                     error_msg = f"Error executing tool {tool_name}: {str(e)}"
                     error_message = cl.Message(content=error_msg)
                     await error_message.send()
                     
-                    # 即使工具執行失敗，也要加入錯誤回應到歷史中
+                    # 設定錯誤訊息作為工具回應內容
+                    tool_result_content = error_msg
+
+                # 確保每個 tool_call_id 只對應一個 tool 回應訊息
+                if tool_result_content is not None:
                     message_history.append({
                         "role": "tool",
                         "tool_call_id": tool_call_id,
-                        "content": error_msg,
+                        "content": tool_result_content,
                     })
+                    cl.user_session.set("message_history", message_history)
+                    
+                # 檢查是否有新的圖片檔案產生
+                await check_and_process_new_images(existing_files)
+                    
             # 有 tool call，繼續 while loop（再丟給 LLM）
             # 並用新的 cl.Message 物件做 streaming
             msg_obj = cl.Message(content="")
@@ -504,30 +454,48 @@ async def on_message(message: cl.Message):
         ]
     }
     images = [file for file in message.elements if "image" in file.mime]
-    
+    # 支援的文件副檔名
+    supported_docs = ['.pdf', '.ppt', '.pptx', '.xls', '.xlsx', '.doc', '.docx']
     # 取得視覺語言模型設定
     current_settings = cl.user_session.get('current_settings', {})
     use_vision_model = current_settings.get("use_vision_model", False)
-    
-    file_content = [await convert_to_markdown(file.path, use_vision_model=use_vision_model) for file in message.elements if os.path.splitext(file.name)[1] in ['.pdf', '.ppt', '.pptx', '.xls', '.xlsx', '.doc', '.docx']]
-
-    for content in file_content:
-        new_message['content'].append(
-            {
-                "type": "text",
-                "text": content
-            }
-        )
+    # 已處理的檔案集合
+    handled_files = set()
+    # 文件處理
+    for file in message.elements:
+        ext = os.path.splitext(file.name)[1].lower()
+        if ext in supported_docs:
+            content = await convert_to_markdown(file.path, use_vision_model=use_vision_model)
+            new_message['content'].append(
+                {
+                    "type": "text",
+                    "text": content
+                }
+            )
+            handled_files.add(file.name)
+    # 圖片處理
     for image in images:
         new_message['content'].append(
             {
                 "type": "image_url",
                 "image_url": {
-                    "url": f"data:image/jpeg;base64,{encode_image(image.path)}",
+                    "url": f"data:image/jpeg;base64,{await encode_image(image.path)}",
                     "detail": "high"
                 }
             }
         )
+        handled_files.add(image.name)
+    # 其他未處理格式註記
+    for file in message.elements:
+        if file.name not in handled_files:
+            ext = os.path.splitext(file.name)[1].lower()
+            # 註記收到的非支援格式
+            new_message['content'].append(
+                {
+                    "type": "text",
+                    "text": f"（已收到檔案：{os.path.basename(file.path)}）"
+                }
+            )
     message_history = cl.user_session.get("message_history", [])
     message_history.append(new_message)
     try:
