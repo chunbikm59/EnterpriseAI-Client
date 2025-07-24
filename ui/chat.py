@@ -11,7 +11,7 @@ import io
 from markitdown import MarkItDown
 import datetime
 import asyncio
-from utils.mcp_manager import MCPConnectionManager
+from utils.mcp_manager_legacy import MCPConnectionManager
 
 async def encode_image(image_path):
     """非同步編碼圖片為 base64，使用 aiofiles 進行非同步檔案讀取"""
@@ -162,7 +162,7 @@ async def start():
 
     # 確保每個會話都有唯一的 MCP 管理器實例
     session_id = cl.user_session.get('id')
-    mcp_manager = MCPConnectionManager(id=session_id, config=mcp_config, on_connect=on_mcp_connect)
+    mcp_manager = MCPConnectionManager(id=session_id, config=mcp_config, on_connect=on_mcp_connect, on_disconnect=on_disconnect)
     cl.user_session.set('mcp_manager', mcp_manager)
     
     # 根據初始設定連線已啟用的伺服器
@@ -184,7 +184,10 @@ async def on_mcp_connect(name, tools=[]):
         
     cl.user_session.set('chat_setting', chat_setting)
     settings = await cl.ChatSettings(chat_setting).send()
-    
+
+async def on_disconnect(name):
+     print(name, "已斷線---===============================")
+
 @cl.on_chat_end
 async def end():
     mcp_manager = cl.user_session.get('mcp_manager')
