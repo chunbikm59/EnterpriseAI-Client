@@ -11,7 +11,22 @@ import io
 from markitdown import MarkItDown
 import datetime
 import asyncio
+import httpx
 from utils.mcp_manager_legacy import MCPConnectionManager
+from chainlit_app.overseer import render_overseer_for_user, run_overseer
+from foobar_provider import FooBarProvider
+from inject_custom_auth import add_custom_oauth_provider
+
+add_custom_oauth_provider("foobar", FooBarProvider())
+
+@cl.oauth_callback
+def oauth_callback(
+  provider_id: str,
+  token: str,
+  raw_user_data: Dict[str, str],
+  default_user: cl.User,
+) -> Optional[cl.User]:
+  return default_user  
 
 async def encode_image(image_path):
     """非同步編碼圖片為 base64，使用 aiofiles 進行非同步檔案讀取"""
@@ -103,6 +118,8 @@ async def convert_to_markdown(file_path, model="gpt-4o-mini", use_vision_model=F
 
 @cl.on_chat_start
 async def start():
+    print(cl.user_session.get('user'))
+    session_id = cl.user_session.get('id')
     await cl.Message(content=f'### 你好，歡迎回來!　ദ്ദി(˵ •̀ ᴗ - ˵ ) ✧').send()
     file_folder = await asyncio.to_thread(os.path.join, os.getcwd(), '.files', cl.user_session.get('id'))
     if not await asyncio.to_thread(os.path.exists, file_folder):
@@ -113,7 +130,7 @@ async def start():
         [
             {
                 "role": "system",
-                "content": "You are a helpful 台灣繁體中文 AI assistant. You can access tools using MCP servers.",
+                "content": "You are a helpful 台灣繁體中文 AI assistant. You can access tools. 如果有可以調用prompt出來查看文字流程的工具，根據任務性質先行調用確認使用者設定的流程prompt",
             },
             {
                 "role": "assistant",
@@ -169,6 +186,7 @@ async def start():
     for server_name, config in mcp_config.items():
         setting_key = f"mcp_{server_name}"
         if settings.get(setting_key, config.get('enabled', False)):
+            # await cl.Message(content=f"⏳ 正在連線到 MCP 伺服器: {server_name}").send()
             await mcp_manager.add_connection(server_name, config)
 
 async def on_mcp_connect(name, tools=[]):
@@ -186,7 +204,7 @@ async def on_mcp_connect(name, tools=[]):
     settings = await cl.ChatSettings(chat_setting).send()
 
 async def on_disconnect(name):
-     print(name, "已斷線---===============================")
+    await cl.Message(content=f"🔌 已斷線 MCP 伺服器: {name}").send()
 
 @cl.on_chat_end
 async def end():
@@ -439,12 +457,46 @@ async def process_llm_response(message_history, initial_msg=None):
         
             continue
         else:
-            # 沒有 tool call，結束
+
             break
 
     # 更新 session message history
     cl.user_session.set("message_history", message_history)
 
+@cl.step(type="tool", name="反思", show_input=False)
+async def overse(message_history):
+    # ====== 在這裡啟動 Overseer ======
+    goal = cl.user_session.get("task_goal") or "（未提供明確任務目標，建議在入場時就保存）"
+    overseer_report = await run_overseer(goal, message_history)
+
+    # 把 overseer 的結果存起來，下一輪可供主 Agent 參考
+    cl.user_session.set("overseer_report", overseer_report)
+    # 也可以把它 append 回 message_history，作為下一輪提示
+    message_history.append({
+        "role": "assistant",
+        "name": "overseer",
+        "content": json.dumps(overseer_report, ensure_ascii=False)
+    })
+    cl.user_session.set("message_history", message_history)
+
+    # 視需求把結果回饋給使用者（可用更人性化渲染）
+    # human_friendly = render_overseer_for_user(overseer_report)
+    # await cl.Message(content=human_friendly).send()
+
+    # 你可以依據 overseer 的 status 做後續控制：
+    status = overseer_report.get("status")
+    if status == "continue":
+        # 將 overseer 建議的 next_actions（如果有）轉成下一輪提示，或直接讓主 Agent 接手
+        # 這邊你可以把 next_actions 作為「system or user message」提示給主 Agent
+        pass
+    elif status == "need_user_input":
+        # 引導使用者提供 overseer_report["ask_user"] 的資訊
+        pass
+    else:  # "terminate"
+        # 明確對使用者說明終止原因 & 建議
+        pass
+    return overseer_report
+    
 @cl.on_message
 async def on_message(message: cl.Message):
     new_message =  {

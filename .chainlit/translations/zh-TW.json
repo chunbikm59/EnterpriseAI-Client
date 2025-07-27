@@ -18,7 +18,7 @@
     },
     "auth": {
         "login": {
-            "title": "登入以訪問應用程式",
+            "title": "登入以存取應用程式",
             "form": {
                 "email": {
                     "label": "電子郵件",
@@ -52,7 +52,7 @@
             }
         },
         "provider": {
-            "continue": "繼續使用{{provider}}"
+            "continue": "使用{{provider}}登入"
         }
     },
     "chat": {
