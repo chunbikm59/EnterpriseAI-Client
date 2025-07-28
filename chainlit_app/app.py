@@ -118,9 +118,8 @@ async def convert_to_markdown(file_path, model="gpt-4o-mini", use_vision_model=F
 
 @cl.on_chat_start
 async def start():
-    print(cl.user_session.get('user'))
-    session_id = cl.user_session.get('id')
-    await cl.Message(content=f'### 你好，歡迎回來!　ദ്ദി(˵ •̀ ᴗ - ˵ ) ✧').send()
+    userinfo = cl.user_session.get('user')
+    await cl.Message(content=f'### 你好 {userinfo.identifier}，歡迎回來!　ദ്ദി(˵ •̀ ᴗ - ˵ ) ✧').send()
     file_folder = await asyncio.to_thread(os.path.join, os.getcwd(), '.files', cl.user_session.get('id'))
     if not await asyncio.to_thread(os.path.exists, file_folder):
         await asyncio.to_thread(os.mkdir, file_folder)
@@ -134,7 +133,7 @@ async def start():
             },
             {
                 "role": "assistant",
-                "content": f"現在時間是 {datetime.datetime.now()}",
+                "content": f"現在時間是 {datetime.datetime.now()}，以下為使用者登入資訊:{userinfo.to_json()}",
             }
         ],
     )

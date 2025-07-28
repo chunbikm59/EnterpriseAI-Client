@@ -6,7 +6,7 @@ import contextlib
 from mcp_servers import (
     buildin
 )
-from routers import user, oauth
+from routers import oauth
 
 buildin_app = buildin.mcp.http_app(path='/mcp')
 
