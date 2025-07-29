@@ -2,7 +2,7 @@ from utils.llm_client import get_llm_client, get_model_setting
 from utils.mcp_servers_config import get_mcp_servers_config
 import chainlit as cl
 from chainlit.input_widget import Select, Switch
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Literal
 from mcp.types import CallToolResult, TextContent
 import os
 import json
@@ -178,7 +178,13 @@ async def start():
 
     # 確保每個會話都有唯一的 MCP 管理器實例
     session_id = cl.user_session.get('id')
-    mcp_manager = MCPConnectionManager(id=session_id, config=mcp_config, on_connect=on_mcp_connect, on_disconnect=on_disconnect)
+    mcp_manager = MCPConnectionManager(
+        id=session_id, 
+        config=mcp_config, 
+        on_connect=on_mcp_connect, 
+        on_disconnect=on_disconnect,
+        on_elicit=on_mcp_elicit
+    )
     cl.user_session.set('mcp_manager', mcp_manager)
     
     # 根據初始設定連線已啟用的伺服器
@@ -558,6 +564,17 @@ async def on_message(message: cl.Message):
         error_message = f"Error: {str(e)}"
         await cl.Message(content=error_message).send()
 
+async def on_mcp_elicit(elicte_param) -> Literal["accept", "decline", "cancel"]:
+    res = await cl.AskActionMessage(
+        content=elicte_param.get('message'),
+        actions=[
+            cl.Action(name="accept", payload={"value": "accept"}, label="✔️ 同意"),
+            cl.Action(name="decline", payload={"value": "decline"}, label="❌ 拒絕"),
+        ],
+    ).send()
+
+    return res.get("payload").get("value")
+        
 if __name__ == '__main__':
     from chainlit.cli import run_chainlit
     run_chainlit(__file__)

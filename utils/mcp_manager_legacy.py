@@ -11,13 +11,14 @@ from mcp.shared.context import RequestContext
 
 # MCP 連線管理
 class MCPConnectionManager:
-    def __init__(self, id:str, config=None, on_connect:FunctionType=None, on_disconnect:FunctionType=None):
+    def __init__(self, id:str, config=None, on_connect:FunctionType=None, on_disconnect:FunctionType=None, on_elicit:FunctionType=None):
         self.id = id
         self.connections = {}  # 儲存每個連線的 context manager
         self.sessions = {}
         self.tools = {}        
         self.config = config or {}
         self.on_connect = on_connect
+        self.on_elicit = on_elicit
         self.connection_tasks = {}  # 儲存每個連線的 task
         self.shutdown_event = asyncio.Event()
         
@@ -86,7 +87,7 @@ class MCPConnectionManager:
                     return
                 
                 # 建立 session
-                session_context = ClientSession(read_stream, write_stream, list_roots_callback=self.list_roots_request)
+                session_context = ClientSession(read_stream, write_stream, list_roots_callback=self.list_roots_request, elicitation_callback=self.elicitation_request)
                 session = await stack.enter_async_context(session_context)
                 await session.initialize()
                 
@@ -98,24 +99,16 @@ class MCPConnectionManager:
                 # 呼叫回調函數
                 if self.on_connect:
                     await self.on_connect(mcp_name, tools)
-                
+
                 # 等待直到被取消或關閉
                 await self.shutdown_event.wait()
-                
-        except asyncio.CancelledError:
-            # 正常的取消，清理資源
-            if mcp_name in self.sessions:
-                del self.sessions[mcp_name]
-            if mcp_name in self.tools:
-                del self.tools[mcp_name]
-            raise
+
         except Exception as e:
+            import traceback
             print(f"MCP 伺服器 {mcp_name} 連線錯誤: {str(e)}")
-            # 清理資源
-            if mcp_name in self.sessions:
-                del self.sessions[mcp_name]
-            if mcp_name in self.tools:
-                del self.tools[mcp_name]
+            print(traceback.format_exc())
+            await self.remove_connection(mcp_name)
+
         finally:
             # 確保資源被正確清理
             try:
@@ -191,3 +184,9 @@ class MCPConnectionManager:
                 uri=types.FileUrl(root_uri),
                 name="user_session_folder"
         )])
+    async def elicitation_request(self, context:RequestContext["ClientSession", Any], request:types.ElicitRequestParams) -> types.ElicitResult | types.ErrorData:
+        if self.on_elicit:
+            action = await self.on_elicit(request.model_dump())
+            return types.ElicitResult(
+                action=action,
+            )
