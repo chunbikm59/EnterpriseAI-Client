@@ -15,7 +15,7 @@
 ## 🧠 主要功能
 
 - ✅ **支援 MCP（Model Context Protocol）**  
-  將 LLM 與企業內部系統整合，實現雙向溝通。支援 Streamable HTTP 與 stdio 兩種連線方式。
+  將 LLM 與企業內部系統整合，實現雙向溝通。支援 Streamable HTTP 與 stdio 兩種連線方式，支援 MCP 的 Tool、Roots、Elicitation。
 
 - ✅ **圖片與文件解析**  
   支援 `.pdf`, `.docx`, `.pptx`, `.xlsx` 等企業文書常見格式，自動轉為 Markdown 供 AI 理解。
@@ -23,8 +23,11 @@
 - ✅ **自定義 Prompt 動態註冊成 MCP Tool**  
   透過 `user_custom_prompt.py` 讓使用者可以動態註冊自定義的 prompt 成為 MCP 工具，模型可根據情境自動選擇相關的 prompt 來理解複雜流程。
 
-- ⏳ **多媒體語音轉文字（STT）**  
-  支援語音/影片檔案內容提取，對於會議錄影的內容提取很有幫助，預計支援 `whisper` 或 `faster-whisper`。
+- ✅ **影片轉錄與多媒體語音轉文字（STT）**  
+  支援語音/影片檔案內容自動轉錄，適用於會議錄影、影音檔案等多媒體資料。
+
+- ✅ **第三方登入（OAuth）範例**  
+  提供 OAuth 登入範例，協助企業整合內部 SSO 或第三方認證機制。
 
 ---
 
@@ -45,8 +48,8 @@
 
 - **前端介面**：Chainlit
 - **後端服務**：FastAPI
-- **檔案處理**：`markitdown`, `docling`
-- **語音處理（規劃中）**：`ffmpeg`, `whisper`, `faster-whisper`
+- **檔案處理**：`markitdown`
+- **語音處理**：`ffmpeg`, `whisper`
 
 ---
 
@@ -54,15 +57,21 @@
 
 | 功能項目                             | 狀態    |
 |----------------------------------|---------|
-| ✅ MCP 協定支援                     | 已完成 |
+| ✅ MCP 協定支援（含 Tool, Roots, Elicitation） | 已完成 |
 | ✅ 檔案解析（PDF/Office → Markdown） | 已完成 |
 | ✅ 支援圖片上傳                | 已完成 |
 | ✅ 可自訂Prompt動態註冊成mcp tool讓模型自主取得相關的prompt|已完成|
-| ⏳ 多媒體語音轉文字（STT）          | 待開發 |
-| ⏳ MCP工具管理頁面|待開發|
+| ✅ 影片轉錄與多媒體語音轉文字（STT） | 已完成 |
 ---
 
 ## 🔧 MCP 工具開發
+
+### 支援 Tool、Roots、Elicitation
+
+本專案支援 MCP 協定下的 Tool、Roots、Elicitation 功能：
+- **Tool**：可註冊自定義 API、或內部工具，讓模型根據上下文自動選擇執行。
+- **Roots**： 主要用於獲得當前對話的資料夾路徑，方便掌握本次對話所上傳、生成的檔案狀況。
+- **Elicitation**：可主動詢問使用者、在AI進行敏感操作前(如寫入或修改)讓人類使用者可以做最後確認。
 
 ### 自定義 Prompt 動態註冊
 
