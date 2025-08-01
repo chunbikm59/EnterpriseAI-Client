@@ -11,7 +11,7 @@ from mcp.shared.context import RequestContext
 
 # MCP 連線管理
 class MCPConnectionManager:
-    def __init__(self, id:str, config=None, on_connect:FunctionType=None, on_disconnect:FunctionType=None, on_elicit:FunctionType=None):
+    def __init__(self, id:str, config=None, on_connect:FunctionType=None, on_disconnect:FunctionType=None, on_elicit:FunctionType=None, on_progress:FunctionType=None):
         self.id = id
         self.connections = {}  # 儲存每個連線的 context manager
         self.sessions = {}
@@ -19,6 +19,7 @@ class MCPConnectionManager:
         self.config = config or {}
         self.on_connect = on_connect
         self.on_elicit = on_elicit
+        self.on_progress = on_progress  # 新增進度通知回調
         self.connection_tasks = {}  # 儲存每個連線的 task
         self.shutdown_event = asyncio.Event()
         
@@ -86,8 +87,14 @@ class MCPConnectionManager:
                 else:
                     return
                 
-                # 建立 session
-                session_context = ClientSession(read_stream, write_stream, list_roots_callback=self.list_roots_request, elicitation_callback=self.elicitation_request)
+                # 建立 session，添加 message handler
+                session_context = ClientSession(
+                    read_stream, 
+                    write_stream, 
+                    list_roots_callback=self.list_roots_request, 
+                    elicitation_callback=self.elicitation_request,
+                    message_handler=self._create_message_handler(mcp_name)
+                )
                 session = await stack.enter_async_context(session_context)
                 await session.initialize()
                 
@@ -184,6 +191,21 @@ class MCPConnectionManager:
                 uri=types.FileUrl(root_uri),
                 name="user_session_folder"
         )])
+    def _create_message_handler(self, mcp_name: str):
+        """為特定 MCP server 創建 message handler"""
+        async def message_handler(message) -> None:
+            if isinstance(message, types.ServerNotification):
+                if isinstance(message.root, types.LoggingMessageNotification):
+                    # 處理日誌通知
+                    print(f"📡 [{mcp_name}] {message.root.params.data}")
+                elif isinstance(message.root, types.ProgressNotification):
+                    # 處理進度通知
+                    progress = message.root.params
+                    if self.on_progress:
+                        await self.on_progress(mcp_name, progress.message, progress.progress, progress.total)
+        
+        return message_handler
+
     async def elicitation_request(self, context:RequestContext["ClientSession", Any], request:types.ElicitRequestParams) -> types.ElicitResult | types.ErrorData:
         if self.on_elicit:
             action = await self.on_elicit(request.model_dump())

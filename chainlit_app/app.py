@@ -36,8 +36,8 @@ async def encode_image(image_path):
         result = await asyncio.to_thread(base64.b64encode, image_data)
     return result.decode('utf-8')
 
-async def check_and_process_new_images(existing_files):
-    """檢查並處理工具生成的新圖片檔案"""
+async def check_and_process_new_files(existing_files, append_to_history=False):
+    """檢查並處理工具生成的新檔案（包括圖片和其他檔案）"""
     file_folder = cl.user_session.get('file_folder')
     if not file_folder or not await asyncio.to_thread(os.path.exists, file_folder):
         return
@@ -49,30 +49,36 @@ async def check_and_process_new_images(existing_files):
     current_files = set(await asyncio.to_thread(os.listdir, file_folder))
     new_files = current_files - existing_files
     
-    # 篩選出新的圖片檔案
+    if not new_files:
+        return
+    
+    # 分類新檔案
     new_images = []
+    other_files = []
+    
     for f in new_files:
         filename, extension = await asyncio.to_thread(os.path.splitext, f.lower())
         if extension in image_extensions:
-            new_images.append(f)        
+            new_images.append(f)
+        else:
+            other_files.append(f)
     
-    if not new_images:
-        return
-    
-    # 準備圖片元素和內容
-    image_elements = []
+    # 準備所有元素
+    all_elements = []
     image_content = []
     
+    # 處理圖片檔案
     for image_file in new_images:
         image_path = os.path.join(file_folder, image_file)
-        
-        # 創建圖片元素
+        filename, extension = await asyncio.to_thread(os.path.splitext, image_file.lower())
+
+        # 其他圖片格式使用原有的 path 方式
         image_element = cl.Image(
             name=image_file,
             path=image_path,
             display="inline"
         )
-        image_elements.append(image_element)
+        all_elements.append(image_element)
         
         # 將圖片加入到內容中
         image_content.append({
@@ -82,24 +88,44 @@ async def check_and_process_new_images(existing_files):
                 "detail": "high"
             }
         })
+    
+    # 處理其他檔案
+    for file_name in other_files:
+        file_path = os.path.join(file_folder, file_name)
         
+        # 創建檔案元素供下載
+        file_element = cl.File(
+            name=file_name,
+            path=file_path,
+            display="inline",
+        )
+        all_elements.append(file_element)
 
-    # 一次發送所有圖片到 UI
-    if image_elements:
+    # 一次發送所有元素到 UI
+    if all_elements:
+        content_parts = []
+        if new_images:
+            content_parts.append(f"🖼️ 產生了 {len(new_images)} 個圖片檔案")
+        if other_files:
+            content_parts.append(f"📁 產生了 {len(other_files)} 個檔案可供下載")
+        
+        content = "、".join(content_parts) if content_parts else ""
+        
         await cl.Message(
-            content='',
-            elements=image_elements
+            content=content,
+            elements=all_elements
         ).send()
         
-        # 將所有圖片加入到 message_history 的同一個訊息中
-        message_history = cl.user_session.get("message_history", [])
-        image_message = {
-            "role": "user",
-            "content": image_content
-        }
-        message_history.append(image_message)
-        # 更新 session 中的 message_history
-        cl.user_session.set("message_history", message_history)
+        # 將圖片加入到 message_history 中（只有圖片需要加入對話歷史）
+        if append_to_history and image_content:
+            message_history = cl.user_session.get("message_history", [])
+            image_message = {
+                "role": "assistant",
+                "content": image_content
+            }
+            message_history.append(image_message)
+            # 更新 session 中的 message_history
+            cl.user_session.set("message_history", message_history)
     
 @cl.step(name="檔案文本提取")
 async def convert_to_markdown(file_path, model="gpt-4o-mini", use_vision_model=False):
@@ -183,7 +209,8 @@ async def start():
         config=mcp_config, 
         on_connect=on_mcp_connect, 
         on_disconnect=on_disconnect,
-        on_elicit=on_mcp_elicit
+        on_elicit=on_mcp_elicit,
+        on_progress=on_mcp_progress
     )
     cl.user_session.set('mcp_manager', mcp_manager)
     
@@ -361,7 +388,6 @@ async def process_llm_response(message_history, initial_msg=None):
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
-            print(delta)
 
             if token := delta.content or "":
                 response_text += token
@@ -454,7 +480,7 @@ async def process_llm_response(message_history, initial_msg=None):
                     cl.user_session.set("message_history", message_history)
                     
                 # 檢查是否有新的圖片檔案產生
-                await check_and_process_new_images(existing_files)
+                await check_and_process_new_files(existing_files)
                     
             # 有 tool call，繼續 while loop（再丟給 LLM）
             # 並用新的 cl.Message 物件做 streaming
@@ -564,11 +590,58 @@ async def on_message(message: cl.Message):
         error_message = f"Error: {str(e)}"
         await cl.Message(content=error_message).send()
 
+async def on_mcp_progress(mcp_name: str, message: str, progress: int, total: int):
+    mcp_manager = cl.user_session.get('mcp_manager')
+    try:
+        # 處理本專案自定義訊息格式顯示在側邊欄
+        if mcp_manager['mcp_name'].get('use_artifact'):
+            """處理 MCP 進度通知並更新 ElementSidebar"""
+            # 解析 JSON 訊息
+            notification_data = json.loads(message)
+            
+            # 準備 ElementSidebar 的元素
+            elements = []
+            
+            # 處理每個元素
+            for element in notification_data.get("elements", []):
+                if element["type"] == "text":
+                    # 創建文字元素
+                    text_element = cl.Text(
+                        name=f"text_{len(elements)}",
+                        content=element["content"]
+                    )
+                    elements.append(text_element)
+                    
+                elif element["type"] == "image":
+                    # 創建圖片元素
+                    # 直接使用 base64 數據創建 data URL，不保存到檔案
+                    
+                    # 創建圖片元素，使用 data URL
+                    data_url = f"data:image/png;base64,{element['content']}"
+                    image_element = cl.Image(
+                        name=f"screenshot_{len(elements)}",
+                        url=data_url,
+                        display="side"
+                    )
+                    elements.append(image_element)
+            
+            # 使用唯一的 key 更新 ElementSidebar
+            import time
+            unique_key = f"browser_progress_{int(time.time() * 1000)}"
+            
+            if elements:
+                await cl.ElementSidebar.set_elements(elements, key=unique_key)
+        else:
+            await cl.Message(content=message).send()
+
+    except Exception as e:
+        print(f"處理進度通知時發生錯誤: {str(e)}")
+
 async def on_mcp_elicit(elicte_param) -> Literal["accept", "decline", "cancel"]:
     res = await cl.AskActionMessage(
         content=elicte_param.get('message'),
         actions=[
-            cl.Action(name="accept", payload={"value": "accept"}, label="✔️ 同意"),
+            cl.Action(name="accept", payload={"value": "accept"}, label="✔️ 接受"),
             cl.Action(name="decline", payload={"value": "decline"}, label="❌ 拒絕"),
         ],
     ).send()
