@@ -36,8 +36,32 @@ async def encode_image(image_path):
         result = await asyncio.to_thread(base64.b64encode, image_data)
     return result.decode('utf-8')
 
+async def get_files_state(folder_path):
+    """取得資料夾中所有檔案的狀態（檔案名稱和修改時間）
+    
+    Args:
+        folder_path: 資料夾路徑
+        
+    Returns:
+        dict: {filename: mtime} 格式的字典，記錄每個檔案的修改時間
+    """
+    files_state = {}
+    if folder_path and await asyncio.to_thread(os.path.exists, folder_path):
+        file_list = await asyncio.to_thread(os.listdir, folder_path)
+        for filename in file_list:
+            file_path = os.path.join(folder_path, filename)
+            if await asyncio.to_thread(os.path.isfile, file_path):
+                mtime = await asyncio.to_thread(os.path.getmtime, file_path)
+                files_state[filename] = mtime
+    return files_state
+
 async def check_and_process_new_files(existing_files, append_to_history=False):
-    """檢查並處理工具生成的新檔案（包括圖片和其他檔案）"""
+    """檢查並處理工具生成的新檔案（包括圖片和其他檔案）
+    
+    Args:
+        existing_files: dict，格式為 {filename: mtime}，記錄執行工具前的檔案狀態
+        append_to_history: bool，是否將圖片加入對話歷史
+    """
     file_folder = cl.user_session.get('file_folder')
     if not file_folder or not await asyncio.to_thread(os.path.exists, file_folder):
         return
@@ -45,18 +69,23 @@ async def check_and_process_new_files(existing_files, append_to_history=False):
     # 支援的圖片格式
     image_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg'}
     
-    # 取得當前檔案列表
-    current_files = set(await asyncio.to_thread(os.listdir, file_folder))
-    new_files = current_files - existing_files
+    # 取得當前檔案狀態
+    current_files = await get_files_state(file_folder)
     
-    if not new_files:
+    # 找出新檔案或被修改的檔案
+    new_or_modified_files = []
+    for filename, current_mtime in current_files.items():
+        if filename not in existing_files or existing_files[filename] != current_mtime:
+            new_or_modified_files.append(filename)
+    
+    if not new_or_modified_files:
         return
     
-    # 分類新檔案
+    # 分類新檔案或被修改的檔案
     new_images = []
     other_files = []
     
-    for f in new_files:
+    for f in new_or_modified_files:
         filename, extension = await asyncio.to_thread(os.path.splitext, f.lower())
         if extension in image_extensions:
             new_images.append(f)
@@ -440,11 +469,9 @@ async def process_llm_response(message_history, initial_msg=None):
                 tool_name = tool_call["name"]
                 tool_call_id = f"call_{base_call_id}_{i}"
                 
-                # 記錄工具執行前的檔案狀態
+                # 記錄工具執行前的檔案狀態（包含修改時間）
                 file_folder = cl.user_session.get('file_folder')
-                existing_files = set()
-                if file_folder and await asyncio.to_thread(os.path.exists, file_folder):
-                    existing_files = set(await asyncio.to_thread(os.listdir, file_folder))
+                existing_files = await get_files_state(file_folder)
                 
                 tool_result_content = None
                 
@@ -479,7 +506,7 @@ async def process_llm_response(message_history, initial_msg=None):
                     })
                     cl.user_session.set("message_history", message_history)
                     
-                # 檢查是否有新的圖片檔案產生
+                # 檢查是否有新的檔案產生
                 await check_and_process_new_files(existing_files)
                     
             # 有 tool call，繼續 while loop（再丟給 LLM）
