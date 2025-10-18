@@ -388,7 +388,7 @@ def format_calltoolresult_content(result):
 
 async def process_llm_response(message_history, initial_msg=None):
     """
-    處理 LLM 回答與遞迴工具呼叫，直到沒有 tool call 為止。
+    處理 LLM 回答與遞迴工具呼叫，直到呼叫 attempt_completion 工具為止。
     """
     llm_client = get_llm_client(mode="async")
     mcp_tools = cl.user_session.get("mcp_manager").tools
@@ -464,6 +464,10 @@ async def process_llm_response(message_history, initial_msg=None):
                 "tool_calls": tool_calls_formatted,
             })
             cl.user_session.set("message_history", message_history)
+            
+            # 檢查是否呼叫了 attempt_completion 工具
+            called_attempt_completion = False
+            
             # 執行每個工具並加入對應的 tool 回應
             for i, tool_call in enumerate(tool_calls):
                 tool_name = tool_call["name"]
@@ -483,7 +487,10 @@ async def process_llm_response(message_history, initial_msg=None):
                     
                     # Format the tool result content
                     tool_result_content = format_calltoolresult_content(tool_result)
-
+                    
+                    # 檢查是否呼叫了 attempt_completion 工具
+                    if tool_name == "attempt_completion":
+                        called_attempt_completion = True
                     
                 except asyncio.CancelledError:
                     # 用戶主動中斷，加入中斷訊息到歷史中
@@ -508,15 +515,19 @@ async def process_llm_response(message_history, initial_msg=None):
                     
                 # 檢查是否有新的檔案產生
                 await check_and_process_new_files(existing_files)
+            
+            # 如果呼叫了 attempt_completion 工具，則停止迴圈
+            if called_attempt_completion:
+                break
                     
             # 有 tool call，繼續 while loop（再丟給 LLM）
             # 並用新的 cl.Message 物件做 streaming
             msg_obj = cl.Message(content="")
         
             continue
-        else:
-
-            break
+        
+        # 如果沒有 tool call，繼續迴圈等待 LLM 可能呼叫工具
+        # 只有在呼叫 attempt_completion 工具時才會真正停止
 
     # 更新 session message history
     cl.user_session.set("message_history", message_history)
