@@ -4,14 +4,14 @@ import io
 import time
 import asyncio
 import json
-from fastmcp import Context, FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 import requests
 import argparse
 from markitdown import MarkItDown
 from yt_dlp import YoutubeDL
 from dotenv import load_dotenv
 from pydub import AudioSegment
-from pydantic import Field
+from pydantic import Field, BaseModel
 import asyncio
 import aiofiles
 from utils.llm_client import get_llm_client, get_model_setting
@@ -178,14 +178,6 @@ async def transcription(
     async with aiofiles.open(transcript_path, 'w', encoding='utf-8') as f:
         await f.write(transcript)
 
-    # 清理壓縮檔案（可選）
-    if transcription_file == compressed_path:
-        try:
-            await asyncio.to_thread(os.remove, compressed_path)
-            print(f"已清理臨時壓縮檔案: {compressed_filename}")
-        except Exception:
-            pass
-
     return transcript
     
 @mcp.tool()
@@ -289,7 +281,7 @@ async def download_youtube_sync(
             if subtitle_content:
                 return subtitle_content
             else:
-                return f"字幕下載完成，但無法讀取字幕內容。請檢查資料夾中的字幕檔案。"
+                return f"執行完成，但無法讀取字幕內容。請檢查資料夾中的字幕檔案。"
     else:
         raise ValueError("content_type 只能是 'audio'、'video' 或 'subtitle'")
     
@@ -382,9 +374,15 @@ async def download_youtube(
     return f"下載完成，請查看資料夾中的檔案列表：\n{files_list}"
 
 @mcp.tool()
-async def sleep_10second():
-    await asyncio.sleep(10) # 保持原樣，讓我們的執行器來處理同步阻塞
-    return "woke up"
+async def attempt_completion(
+    ctx: Context,
+    result: str = Field(description="任務完成的結果描述"),
+):
+    '''在任務完成後呈現結果給使用者。這是一個重要的工具，用於標記任務完成並提供最終結果。'''
+    
+    completion_message = f"任務完成！\n\n結果：\n{result}"
+
+    return completion_message
 
 async def get_conversation_folder(ctx: Context):
     roots = await ctx.session.list_roots()
