@@ -20,8 +20,11 @@
 - ✅ **圖片與文件解析**  
   支援 `.pdf`, `.docx`, `.pptx`, `.xlsx` 等企業文書常見格式，自動轉為 Markdown 供 AI 理解。
 
-- ✅ **自定義 Prompt 動態註冊成 MCP Tool**  
+- ✅ **自定義 Prompt 動態註冊成 MCP Tool**（現已推薦使用 Agent Skills 取代）
   透過 `user_custom_prompt.py` 讓使用者可以動態註冊自定義的 prompt 成為 MCP 工具，模型可根據情境自動選擇相關的 prompt 來理解複雜流程。
+
+- ✅ **Agent Skills — 新增自定義流程管理**
+  現為推薦的流程自動化方式，取代舊有的自定義 Prompt 機制。透過 Anthropic Agent Skills 標準，以結構化方式定義複雜的多步驟流程，讓模型能根據情境自動選用對應的 Skill 並執行任務。詳見 [system_skills/](system_skills/) 與 [user_profiles/](user_profiles/) 目錄。
 
 - ✅ **影片轉錄與多媒體語音轉文字（STT）**  
   支援語音/影片檔案內容自動轉錄，適用於會議錄影、影音檔案等多媒體資料。
@@ -48,8 +51,8 @@
 
 - **前端介面**：Chainlit
 - **後端服務**：FastAPI
-- **檔案處理**：`markitdown`
-- **語音處理**：`ffmpeg`, `whisper`
+- **檔案處理**：`markitdown`, `docling`
+- **語音處理（規劃中）**：`ffmpeg`, `whisper`, `faster-whisper`
 
 ---
 
@@ -60,7 +63,8 @@
 | ✅ MCP 協定支援（含 Tool, Roots, Elicitation） | 已完成 |
 | ✅ 檔案解析（PDF/Office → Markdown） | 已完成 |
 | ✅ 支援圖片上傳                | 已完成 |
-| ✅ 可自訂Prompt動態註冊成mcp tool讓模型自主取得相關的prompt|已完成|
+| ✅ 可自訂Prompt動態註冊成mcp tool讓模型自主取得相關的prompt（已由 Agent Skills 取代）|已完成|
+| ✅ Agent Skills 支援（新增自定義流程管理）| 已完成 |
 | ✅ 影片轉錄與多媒體語音轉文字（STT） | 已完成 |
 ---
 
@@ -69,7 +73,7 @@
 ### 支援 Tool、Roots、Elicitation
 
 本專案支援 MCP 協定下的 Tool、Roots、Elicitation 功能：
-- **Tool**：可註冊自定義 API、或內部工具，讓模型根據上下文自動選擇執行。
+- **Tool**：可註冊自定義 prompt、API、或內部工具，讓模型根據需求自動選用。
 - **Roots**： 主要用於獲得當前對話的資料夾路徑，方便掌握本次對話所上傳、生成的檔案狀況。
 - **Elicitation**：可主動詢問使用者、在AI進行敏感操作前(如寫入或修改)讓人類使用者可以做最後確認。
 
