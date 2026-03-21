@@ -1,4 +1,6 @@
-from fastapi import FastAPI
+import os
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from starlette.middleware.sessions import SessionMiddleware
 import uvicorn
 from chainlit.utils import mount_chainlit
@@ -22,8 +24,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# 限制 MCP endpoint 只允許本機連線
+@app.middleware("http")
+async def restrict_mcp_to_localhost(request: Request, call_next):
+    if request.url.path.startswith("/mcp-buildin"):
+        if request.client.host not in ("127.0.0.1", "::1"):
+            return JSONResponse(status_code=403, content={"detail": "Forbidden"})
+    return await call_next(request)
+
 # 添加 Session 中間件
-app.add_middleware(SessionMiddleware, secret_key="your-secret-key-here")
+app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET_KEY", "your-secret-key-here"))
 
 # 註冊路由器
 app.include_router(oauth.router, prefix="/api/oauth", tags=["OAuth"])

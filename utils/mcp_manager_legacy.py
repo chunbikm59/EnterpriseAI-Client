@@ -72,7 +72,7 @@ class MCPConnectionManager:
                 if config['transport'] == 'http':
                     streams_context = streamablehttp_client(
                         url=config['url'],
-                        headers=headers
+                        headers=headers or {}
                     )
                     read_stream, write_stream, _ = await stack.enter_async_context(streams_context)
                 elif config['transport'] == 'stdio':

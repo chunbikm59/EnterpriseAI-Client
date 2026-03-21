@@ -1,5 +1,8 @@
 from utils.llm_client import get_llm_client, get_model_setting
 from utils.mcp_servers_config import get_mcp_servers_config
+from utils.user_profile import ensure_profile_exists
+from utils.skills_manager import discover_skills, build_skill_catalog_json, skills_to_json
+from mcp_servers.buildin import register_session_skills, unregister_session_skills
 import chainlit as cl
 from chainlit.input_widget import Select, Switch
 from typing import Dict, Any, List, Optional, Literal
@@ -10,8 +13,10 @@ import base64
 import io
 from markitdown import MarkItDown
 import datetime
+import time
 import asyncio
 import httpx
+import re
 from utils.mcp_manager_legacy import MCPConnectionManager
 from chainlit_app.overseer import render_overseer_for_user, run_overseer
 from foobar_provider import FooBarProvider
@@ -179,12 +184,33 @@ async def start():
     if not await asyncio.to_thread(os.path.exists, file_folder):
         await asyncio.to_thread(os.mkdir, file_folder)
     cl.user_session.set('file_folder', file_folder)
+
+    # ── AgentSkills：建立使用者 profile 並發現已安裝的技能 ──
+    user_id = userinfo.identifier
+    await asyncio.to_thread(ensure_profile_exists, user_id)
+    skills = await asyncio.to_thread(discover_skills, user_id)
+    cl.user_session.set('skills', skills)  # 供後續使用
+
+    # 根據技能清單動態組合 system prompt
+    skills_section = ""
+    if skills:
+        catalog_json = build_skill_catalog_json(skills)
+        skills_section = (
+            f"\n\n以下為你可以使用的技能清單：\n{catalog_json}"
+            "\n\n當使用者的任務符合某個技能的描述時，請呼叫 activate_skill 工具並傳入技能名稱，以載入完整的技能指引。"
+        )
+    system_content = (
+        "You are a helpful 台灣繁體中文 AI assistant. You can access tools. "
+        "當你準備好讓使用者繼續操作（完成任務、遇到阻礙、或需要使用者提供資訊）時，必須呼叫 attempt_completion 工具來結束你的回合，否則使用者無法輸入。"
+        + skills_section
+    )
+
     cl.user_session.set(
         "message_history",
         [
             {
                 "role": "system",
-                "content": "You are a helpful 台灣繁體中文 AI assistant. You can access tools. 如果有可以調用prompt出來查看文字流程的工具，根據任務性質先行調用確認使用者設定的流程prompt",
+                "content": system_content,
             },
             {
                 "role": "assistant",
@@ -242,13 +268,17 @@ async def start():
         on_progress=on_mcp_progress
     )
     cl.user_session.set('mcp_manager', mcp_manager)
-    
+
+    # 將技能目錄註冊到 buildin MCP server 的 session registry，供 activate_skill 工具使用
+    if skills:
+        register_session_skills(session_id, skills_to_json(skills))
+
     # 根據初始設定連線已啟用的伺服器
     for server_name, config in mcp_config.items():
         setting_key = f"mcp_{server_name}"
         if settings.get(setting_key, config.get('enabled', False)):
             # await cl.Message(content=f"⏳ 正在連線到 MCP 伺服器: {server_name}").send()
-            await mcp_manager.add_connection(server_name, config)
+            await mcp_manager.add_connection(server_name, config, headers={"X-Session-Id": session_id, "X-User-Id": user_id})
 
 async def on_mcp_connect(name, tools=[]):
     mcp_config = get_mcp_servers_config(cl.user_session.get('file_folder'))
@@ -269,6 +299,10 @@ async def on_disconnect(name):
 
 @cl.on_chat_end
 async def end():
+    # 清除 AgentSkills session registry
+    session_id = cl.user_session.get('id')
+    unregister_session_skills(session_id)
+
     mcp_manager = cl.user_session.get('mcp_manager')
     if mcp_manager:
         await mcp_manager.shutdown()
@@ -312,7 +346,7 @@ async def on_settings_update(settings):
         
         if is_enabled and not is_connected:
             # 需要連線但尚未連線
-            await mcp_manager.add_connection(server_name, config)
+            await mcp_manager.add_connection(server_name, config, headers={"X-Session-Id": cl.user_session.get('id'), "X-User-Id": cl.user_session.get('user').identifier})
             await cl.Message(content=f"⏳ 正在連線到 MCP 伺服器: {server_name}").send()
             
         elif not is_enabled and is_connected:
@@ -412,6 +446,11 @@ async def process_llm_response(message_history, initial_msg=None):
 
         response_text = ""
         tool_calls = []
+        has_streamed_content = False
+
+        thinking = False
+        thinking_step = None
+        start = time.time()
 
         async for chunk in stream:
             if not chunk.choices:
@@ -419,8 +458,28 @@ async def process_llm_response(message_history, initial_msg=None):
             delta = chunk.choices[0].delta
 
             if token := delta.content or "":
-                response_text += token
-                await msg_obj.stream_token(token)
+                if token == "<think>":
+                    thinking = True
+                    thinking_step = cl.Step(name="Thinking")
+                    await thinking_step.__aenter__()
+                    continue
+
+                if token == "</think>":
+                    thinking = False
+                    if thinking_step is not None:
+                        thought_for = round(time.time() - start)
+                        thinking_step.name = f"Thought for {thought_for}s"
+                        await thinking_step.update()
+                        await thinking_step.__aexit__(None, None, None)
+                    continue
+
+                if thinking and thinking_step is not None:
+                    await thinking_step.stream_token(token)
+                else:
+                    response_text += token
+                    if token.strip() or has_streamed_content:
+                        await msg_obj.stream_token(token)
+                        has_streamed_content = True
 
             if delta.tool_calls:
                 for tool_call in delta.tool_calls:
@@ -433,6 +492,14 @@ async def process_llm_response(message_history, initial_msg=None):
 
                     if tool_call.function.arguments:
                         tool_calls[tc_id]["arguments"] += tool_call.function.arguments
+
+        # 若有 tool call，清除末尾可能殘留的 markdown 列表標記（如 "\n- "）
+        if tool_calls and has_streamed_content:
+            cleaned = re.sub(r'[\s\-\*#]+$', '', response_text)
+            if cleaned != response_text:
+                msg_obj.content = cleaned
+                await msg_obj.update()
+                response_text = cleaned
 
         # 如果有 assistant 回覆內容，加入歷史
         if response_text.strip():
@@ -528,7 +595,7 @@ async def process_llm_response(message_history, initial_msg=None):
         
         # 如果沒有 tool call，繼續迴圈等待 LLM 可能呼叫工具
         # 只有在呼叫 attempt_completion 工具時才會真正停止
-
+        msg_obj = cl.Message(content="")
     # 更新 session message history
     cl.user_session.set("message_history", message_history)
 
