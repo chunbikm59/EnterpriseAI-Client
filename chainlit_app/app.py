@@ -299,6 +299,16 @@ async def on_disconnect(name):
 
 @cl.on_chat_end
 async def end():
+    # 取消正在執行的 LLM 串流 Task（使用者關閉分頁時）
+    from chainlit.context import context as cl_context
+    session = cl_context.session
+    if session and session.current_task and not session.current_task.done():
+        session.current_task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(session.current_task), timeout=2.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+
     # 清除 AgentSkills session registry
     session_id = cl.user_session.get('id')
     unregister_session_skills(session_id)
@@ -439,7 +449,10 @@ async def process_llm_response(message_history, initial_msg=None):
     # 用於 streaming 回覆
     msg_obj = initial_msg or cl.Message(content="")
 
-    while True:
+    MAX_ITERATIONS = 20  # 最大工具呼叫迴圈次數，防止無限迴圈
+    iteration = 0
+    while iteration < MAX_ITERATIONS:
+        iteration += 1
         stream = await llm_client.chat.completions.create(
             messages=message_history, **chat_params
         )
@@ -560,8 +573,8 @@ async def process_llm_response(message_history, initial_msg=None):
                         called_attempt_completion = True
                     
                 except asyncio.CancelledError:
-                    # 用戶主動中斷，加入中斷訊息到歷史中
-                    tool_result_content = f"Tool {tool_name} was cancelled by user"
+                    # 用戶斷線或手動停止，必須重新拋出讓上層處理
+                    raise
 
                 except Exception as e:
                     error_msg = f"Error executing tool {tool_name}: {str(e)}"
@@ -596,6 +609,11 @@ async def process_llm_response(message_history, initial_msg=None):
         # 如果沒有 tool call，繼續迴圈等待 LLM 可能呼叫工具
         # 只有在呼叫 attempt_completion 工具時才會真正停止
         msg_obj = cl.Message(content="")
+
+    # 如果達到最大迴圈次數限制
+    if iteration >= MAX_ITERATIONS:
+        await cl.Message(content="已達最大工具呼叫次數限制（20 次），對話終止。").send()
+
     # 更新 session message history
     cl.user_session.set("message_history", message_history)
 
@@ -691,6 +709,9 @@ async def on_message(message: cl.Message):
     message_history.append(new_message)
     try:
         await process_llm_response(message_history)
+    except asyncio.CancelledError:
+        # 使用者斷線或手動停止，靜默結束，讓取消信號正常傳播
+        raise
     except Exception as e:
         error_message = f"Error: {str(e)}"
         await cl.Message(content=error_message).send()
