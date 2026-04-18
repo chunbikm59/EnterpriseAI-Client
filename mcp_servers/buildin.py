@@ -4,10 +4,12 @@ import io
 import time
 import asyncio
 import json
-from mcp.server.fastmcp import Context, FastMCP
+from contextvars import ContextVar
+from mcp.server.fastmcp import FastMCP
 import requests
 import argparse
 from markitdown import MarkItDown
+from utils.pdf_converter import PyMuPdfConverter
 from yt_dlp import YoutubeDL
 from dotenv import load_dotenv
 from pydub import AudioSegment
@@ -15,13 +17,35 @@ from pydantic import Field, BaseModel
 import asyncio
 import aiofiles
 from utils.llm_client import get_llm_client, get_model_setting
+from utils.user_profile import get_user_profile_dir, get_user_memory_dir
+from utils.memory_manager import (
+    write_memory_file, write_memory_index,
+    load_memory_file, load_memory_index, list_memory_files,
+    validate_memory_path,
+)
 
 mcp = FastMCP(name="buildin_tools", json_response=False, stateless_http=False)
+
+# ── 全域 MarkItDown 單例（避免每次呼叫重新初始化 requests.Session / magika.Magika）──
+_md = MarkItDown(enable_plugins=True)
+_md.register_converter(PyMuPdfConverter(), priority=-1.0)  # 優先於 pdfminer（priority 越小越先執行），修正 CJK 亂碼
+
+# ── Session Context (contextvars，取代 FastMCP Context) ──
+_session_ctx: ContextVar[dict] = ContextVar(
+    "buildin_session_ctx",
+    default={"session_id": "", "user_id": "", "conversation_folder": ""}
+)
 
 # ── AgentSkills session registry ──
 # 因為 buildin MCP server 是 in-process（同進程 HTTP transport），
 # 無法透過 env var 傳遞資料，改用 module-level dict 按 session_id 儲存技能目錄。
 _session_skill_catalogs: dict[str, str] = {}
+
+# ── 動態表單等待機制 ──
+# key: session_id
+# value: {"form_id": str, "event": asyncio.Event, "result": dict,
+#         "elem_id": str|None, "msg_id": str|None, "original_props": dict}
+_pending_forms: dict[str, dict] = {}
 
 
 def register_session_skills(session_id: str, skills_json: str):
@@ -58,13 +82,21 @@ def {func_name}():
 
     return namespace[func_name]
 
+def _check_path_in_allowed_roots(abs_path: str, allowed_roots: list[str]) -> bool:
+    """檢查 abs_path 是否位於 allowed_roots 中的任何一個根目錄下（含根目錄本身）。
+    所有路徑參數皆應已經過 os.path.realpath 解析。
+    """
+    return any(
+        abs_path.startswith(r + os.sep) or abs_path == r
+        for r in allowed_roots
+    )
+
 @mcp.tool()
 async def download_file_with_url(
-    ctx: Context,
     url: str = Field(description="要下載的檔案網址連結")
 ):
     '''下載網路上的檔案連結到本次對話所屬資料夾'''
-    root_folder = await get_conversation_folder(ctx)
+    root_folder = get_conversation_folder()
     try:
         # 發送 GET 請求下載檔案
         response = requests.get(url, stream=True)
@@ -84,10 +116,18 @@ async def download_file_with_url(
                 filename = filename.split('?')[0]
             if not filename or '.' not in filename:
                 filename = 'downloaded_file'
-        
+
+        # 只取純檔名，防止 Content-Disposition 或 URL 中含 ../ 路徑穿越
+        filename = os.path.basename(filename.replace("\\", "/"))
+        if not filename or filename.startswith("."):
+            filename = 'downloaded_file'
+
         # 確保檔案路徑在 get_conversation_folder(ctx) 中
         file_path = os.path.join(root_folder, filename)
-        
+        # realpath 驗證，防止萬一仍有穿越
+        if not _check_path_in_allowed_roots(os.path.realpath(file_path), [os.path.realpath(root_folder)]):
+            return "下載失敗：檔案名稱不合法。"
+
         # 確保目錄存在
         os.makedirs(root_folder, exist_ok=True)
         
@@ -105,24 +145,44 @@ async def download_file_with_url(
         return f"發生錯誤: {str(e)}"
 
 @mcp.tool()
-async def list_files(ctx: Context):
-    '''列出本次對話資料夾中檔案'''
-    root_folder = await get_conversation_folder(ctx)
-    return await _list_files_internal(root_folder)
+async def list_files(
+    offset: int = Field(default=0, description="從第幾個項目開始列出（從 0 起算，預設 0）"),
+    limit: int = Field(default=200, description="最多列出幾個項目（預設 200；0 表示不限制）"),
+    directory: str = Field(default="conversation", description=(
+        "要列出的目錄：\n"
+        "- 'conversation'（預設）：本次對話資料夾\n"
+        "- 'memory'：使用者長期記憶目錄（含 type/description，供判斷哪個需更新）"
+    )),
+):
+    """列出指定目錄中的檔案。預設列出對話資料夾前 200 個，可自行指定範圍，無數量上限。"""
+    if directory == "memory":
+        user_id = _session_ctx.get()["user_id"]
+        files = list_memory_files(user_id)
+        if not files:
+            return "記憶目錄目前沒有任何檔案。"
+        lines = [
+            f"- {f['filename']} [{f.get('type', '')}] — {f.get('description', '（無描述）')} ({f['size_bytes']} bytes)"
+            for f in files
+        ]
+        return "記憶目錄檔案清單：\n" + "\n".join(lines)
+    root_folder = get_conversation_folder()
+    return await _list_files_internal(root_folder, offset=offset, limit=limit)
 
-@mcp.tool()
+# @mcp.tool()
 async def transcription(
-    ctx: Context,
     filename: str = Field(description="要轉錄的影音檔案名稱（支援 mp3, mp4, wav, m4a, webm, ogg 等格式）")
 ):
     '''將本次對話資料夾中的影音檔轉錄成文字稿'''
-    root_folder = await get_conversation_folder(ctx)
+    root_folder = get_conversation_folder()
 
-    # 構建完整檔案路徑
+    # 構建完整檔案路徑，並做 realpath 驗證防路徑穿越
     file_path = os.path.join(root_folder, filename)
-    
+    abs_path = os.path.realpath(file_path)
+    if not _check_path_in_allowed_roots(abs_path, [os.path.realpath(root_folder)]):
+        return "存取拒絕：只能存取對話資料夾中的檔案。"
+
     # 用非同步執行同步阻塞 I/O 檢查檔案是否存在
-    file_exists = await asyncio.to_thread(os.path.exists, file_path)
+    file_exists = await asyncio.to_thread(os.path.exists, abs_path)
     if not file_exists:
         return f"檔案不存在: {filename}"
     
@@ -133,14 +193,14 @@ async def transcription(
         return f"不支援的檔案格式: {file_ext}。支援的格式: {', '.join(supported_formats)}"
     
     # 音頻壓縮處理（等效於 ffmpeg -i audio.mp3 -vn -map_metadata -1 -ac 1 -c:a libopus -b:a 12k -application voip audio.ogg）
-    base_name = os.path.splitext(filename)[0]
+    base_name = os.path.splitext(os.path.basename(filename))[0]
     compressed_filename = f"{base_name}_compressed.ogg"
     compressed_path = os.path.join(root_folder, compressed_filename)
-    
+
     try:
         # 音頻檔載入與轉換（同步，包在 to_thread 裡）
         def compress_audio():
-            audio = AudioSegment.from_file(file_path)
+            audio = AudioSegment.from_file(abs_path)
             audio = audio.set_channels(1)
             audio.export(
                 compressed_path,
@@ -153,7 +213,7 @@ async def transcription(
         await asyncio.to_thread(compress_audio)
         
         # 獲取大小比較壓縮率
-        original_size = await asyncio.to_thread(os.path.getsize, file_path)
+        original_size = await asyncio.to_thread(os.path.getsize, abs_path)
         compressed_size = await asyncio.to_thread(os.path.getsize, compressed_path)
         compression_ratio = (1 - compressed_size / original_size) * 100
 
@@ -168,7 +228,7 @@ async def transcription(
     except Exception as compress_error:
         print(f"音頻壓縮失敗，使用原始檔案: {str(compress_error)}")
         # 如果壓縮失敗，使用原始檔案
-        transcription_file = file_path
+        transcription_file = abs_path
     
     # 非同步讀取檔案並包成 BytesIO，因為 API 需要 file-like object
     async with aiofiles.open(transcription_file, 'rb') as f:
@@ -177,7 +237,7 @@ async def transcription(
     audio_file_obj.name = os.path.basename(transcription_file)  # 必須有檔名屬性
     
     # 初始化 OpenAI 客戶端
-    client = get_llm_client(provider='openai', api_key=os.getenv('LLM_API_KEY'), base_url='https://api.openai.com/v1')
+    client = get_llm_client(provider='openai', api_key=os.getenv('LLM_API_KEY'), base_url=os.getenv('BASE_URL', 'https://api.openai.com/v1'))
     
     # 呼叫 Whisper API（非同步）
     transcript = await client.audio.transcriptions.create(
@@ -197,37 +257,133 @@ async def transcription(
     
 @mcp.tool()
 async def read_file(
-    ctx: Context,
-    filename: str = Field(description="要讀取的檔案名稱或路徑（支援 PDF, PowerPoint, Word, Excel, Images, HTML, CSV, JSON, XML, ZIP, EPub 等格式）")
+    filename: str = Field(description=(
+        "要讀取的檔案名稱或路徑。支援：\n"
+        "- 對話資料夾內的檔案（直接填檔名）\n"
+        "- 自己的記憶檔案（user_profiles/{user_id}/memory/filename.md）\n"
+        "- 支援格式：PDF, PowerPoint, Word, Excel, Images, HTML, CSV, JSON, XML, ZIP, EPub 等"
+    )),
+    start_line: int = Field(1, description="從第幾行開始讀取（從 1 起算，預設 1）"),
+    end_line: int = Field(2000, description="讀到第幾行結束（預設 2000；0 表示讀到 start_line+1999）"),
 ):
-    '''將檔案轉成 markdown 格式。支援對話資料夾內的檔案，以及自己的 user_profiles 技能資源。'''
-    from utils.user_profile import get_user_profile_dir
+    '''將檔案轉成 markdown 格式，預設回傳第 1–2000 行，可自行指定範圍，無行數上限。支援對話資料夾內的檔案，以及自己的 user_profiles 技能資源。'''
 
-    user_id = ctx.request_context.request.headers.get("X-User-Id", "")
-    conversation_folder = await get_conversation_folder(ctx)
+    ctx_data = _session_ctx.get()
+    user_id = ctx_data["user_id"]
+    conversation_folder = get_conversation_folder()
 
     norm = filename.replace("\\", "/").lstrip("/")
+    _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     if norm.startswith("user_profiles/"):
-        file_path = norm  # 相對於專案根目錄
+        file_path = os.path.join(_PROJECT_ROOT, norm)  # 明確以專案根目錄為 base
     else:
         file_path = os.path.join(conversation_folder, filename)
 
-    # 存取控制：防路徑穿越 & 跨用戶
+    # 存取控制：防路徑穿越 & 跨用戶（邏輯不變）
     abs_path = os.path.realpath(file_path)
     allowed_roots = [os.path.realpath(conversation_folder)]
     if user_id:
         allowed_roots.append(os.path.realpath(get_user_profile_dir(user_id)))
 
-    if not any(abs_path.startswith(r + os.sep) or abs_path == r for r in allowed_roots):
+    if not _check_path_in_allowed_roots(abs_path, allowed_roots):
         return "存取拒絕：只能讀取自己的資料夾。"
 
-    md = MarkItDown(enable_plugins=True)
-    result = md.convert(abs_path)
-    return result.text_content
+    # 路徑存在性驗證
+    if not await asyncio.to_thread(os.path.exists, abs_path):
+        return f"檔案不存在：{filename}"
+
+    # 100 MB 上限）
+    FILE_SIZE_LIMIT = 100 * 1024 * 1024
+    file_size = await asyncio.to_thread(os.path.getsize, abs_path)
+    if file_size > FILE_SIZE_LIMIT:
+        size_mb = file_size / (1024 * 1024)
+        return (
+            f"檔案過大（{size_mb:.1f} MB），超過 50 MB 上限，無法讀取。\n"
+            f"建議：若為文字檔案，請使用其他方式分段傳入內容。"
+        )
+
+    # 非同步轉換（避免阻塞事件迴圈）+ 轉換失敗捕獲
+    try:
+        result = await asyncio.to_thread(_md.convert, abs_path, extract_pages=True)
+    except FileNotFoundError:
+        return f"檔案不存在：{filename}"
+    except Exception as e:
+        return f"檔案轉換失敗：{str(e)}"
+
+    full_text = result.text_content
+    lines = full_text.splitlines()
+    total = len(lines)
+    total_chars = len(full_text)
+
+    # 空檔案處理
+    if total == 0:
+        return f"[檔案內容為空]\n\n{filename} 轉換後沒有任何文字內容。"
+
+    # 大型檔案：超過 2000 行或 50,000 字元時自動寫檔
+    LARGE_LINE_THRESHOLD = 2000
+    LARGE_CHAR_THRESHOLD = 50_000
+    persist_note = ""
+    if total > LARGE_LINE_THRESHOLD or total_chars > LARGE_CHAR_THRESHOLD:
+        base_name = os.path.splitext(os.path.basename(abs_path))[0]
+        saved_path = os.path.join(conversation_folder, f"{base_name}_converted.md")
+        if not await asyncio.to_thread(os.path.exists, saved_path):
+            def _write():
+                with open(saved_path, 'w', encoding='utf-8') as f:
+                    f.write(full_text)
+            await asyncio.to_thread(_write)
+        persist_note = (
+            f"[完整轉換結果已儲存至：{os.path.basename(saved_path)}（共 {total} 行，{total_chars:,} 字元）]\n"
+            f"可使用 read_file 指定 start_line/end_line 分段讀取。\n\n"
+        )
+
+    # 計算實際範圍
+    actual_start = max(1, start_line)
+    if end_line <= 0:
+        actual_end = actual_start + 1999
+    elif end_line < actual_start:
+        actual_end = actual_start + 1999  # end_line < start_line → 自動修正
+    else:
+        actual_end = end_line
+    actual_end = min(actual_end, total)
+
+    # start_line 超限提示
+    if actual_start > total:
+        return (
+            f"start_line={start_line} 超過檔案總行數（共 {total} 行）。\n"
+            f"請使用 start_line=1 到 start_line={total} 之間的值。"
+        )
+
+    # 行號前綴（cat -n 格式，方便 LLM 引用具體行數）
+    numbered_lines = [
+        f"{lineno}\t{line}"
+        for lineno, line in enumerate(lines[actual_start - 1 : actual_end], start=actual_start)
+    ]
+    chunk = "\n".join(numbered_lines)
+
+    # 單次回傳字元數上限（50,000 字元），超過時截斷並提示
+    OUTPUT_CHAR_LIMIT = 50_000
+    truncated = False
+    if len(chunk) > OUTPUT_CHAR_LIMIT:
+        chunk = chunk[:OUTPUT_CHAR_LIMIT]
+        # 在換行符邊界截斷，找出最後一個完整行
+        last_nl = chunk.rfind('\n')
+        if last_nl > OUTPUT_CHAR_LIMIT * 0.5:
+            chunk = chunk[:last_nl]
+        # 從截斷後的內容推算實際讀到哪一行
+        actual_end = actual_start + chunk.count('\n')
+        truncated = True
+
+    header = f"{persist_note}[第 {actual_start}–{actual_end} 行，共 {total} 行]\n\n"
+    footer = ""
+    if truncated:
+        footer = f"\n\n（輸出已達 50,000 字元上限，截斷於第 {actual_end} 行。請使用 start_line={actual_end + 1} 繼續讀取）"
+    elif actual_end < total:
+        footer = f"\n\n（若想閱讀更多內容，請使用 start_line={actual_end + 1} 繼續讀取）"
+
+    return header + chunk + footer
 
 async def download_youtube_sync(
-    ctx: Context,
     url: str = Field(description="YouTube 影片網址"),
     content_type: str = Field(
         description="要下載的內容類型：\n"
@@ -238,7 +394,7 @@ async def download_youtube_sync(
     )
 ):
     """下載 YouTube 影片成音訊、影片或字幕"""
-    output_dir = await get_conversation_folder(ctx)
+    output_dir = get_conversation_folder()
 
     # 確保資料夾存在
     os.makedirs(output_dir, exist_ok=True)
@@ -285,7 +441,7 @@ async def download_youtube_sync(
         
         with YoutubeDL(ydl_opts) as ydl:
             # 先獲取影片資訊
-            await ctx.info(f"Starting: 取影片資訊")
+            print("Starting: 取影片資訊")
             info = ydl.extract_info(url, download=False)
             video_title = info.get('title', 'Unknown')
             
@@ -323,7 +479,6 @@ async def download_youtube_sync(
 
 @mcp.tool()
 async def download_youtube(
-    ctx: Context,
     url: str,
     content_type: str = Field(
         description="要下載的內容類型：\n"
@@ -339,7 +494,7 @@ async def download_youtube(
         default=''
     )
 ):
-    output_dir = await get_conversation_folder(ctx)
+    output_dir = get_conversation_folder()
     os.makedirs(output_dir, exist_ok=True)
     output_template = os.path.join(output_dir, '%(title)s.%(ext)s')
     quiet = True
@@ -389,7 +544,7 @@ async def download_youtube(
             'quiet': quiet,
         }
         ydl = YoutubeDL(ydl_opts)
-        await ctx.info("Starting: 取影片資訊")
+        print("Starting: 取影片資訊")
 
         info = await asyncio.to_thread(ydl.extract_info, url, download=False)
         video_title = info.get('title', 'Unknown')
@@ -429,7 +584,6 @@ async def download_youtube(
 
 @mcp.tool()
 async def list_youtube_subtitles(
-    ctx: Context,
     url: str = Field(description="YouTube 影片網址")
 ):
     '''列出 YouTube 影片所有可用的字幕（包含官方字幕和自動產生的字幕）'''
@@ -440,6 +594,7 @@ async def list_youtube_subtitles(
             'quiet': True,
             'no_warnings': True,
             'skip_download': True,  # 只獲取信息，不下載
+            'ignore_no_formats_error': True,
         }
         
         # 使用 asyncio.to_thread 在執行緒中執行同步操作
@@ -504,12 +659,10 @@ async def list_youtube_subtitles(
                f"• 網路連接有問題\n" \
                f"• 影片沒有任何字幕"
 
-@mcp.tool()
-async def attempt_completion(
-    ctx: Context,
-):
+# @mcp.tool()
+async def attempt_completion():
     '''呼叫此工具才能讓使用者輸入或操作，不然你將永遠只能自言自語。無論是完成、受阻或需要補充資訊，都必須透過此工具回覆。'''
-    return 
+    return
 
 @mcp.tool()
 async def query_employee(
@@ -552,18 +705,176 @@ async def query_employee(
     return "\n".join(lines)
 
 
+# ── HTTP 請求工具 ──
+
+# ── 內部服務憑證白名單 ──
+# URL 前綴（從環境變數取得）對應要自動注入的 headers
+# key 明文只在此函式內部存在，不對外暴露
+def _get_internal_auth_rules() -> list[tuple[str, dict]]:
+    rules = []
+    llm_base = os.getenv("BASE_URL", "").rstrip("/")
+    if llm_base:
+        rules.append((llm_base, {"Authorization": f"Bearer {os.getenv('LLM_API_KEY', '')}"}))
+    return rules
+
+@mcp.tool()
+async def http_request(
+    url: str = Field(description="請求目標 URL"),
+    method: str = Field(description="HTTP 方法（GET/POST/PUT/PATCH/DELETE），預設 GET", default="GET"),
+    headers: str = Field(description='請求 headers，JSON 格式字串，例如：{"Content-Type": "application/json"}。可省略', default=""),
+    body: str = Field(description="請求 body，純文字字串。若要送 JSON 請在 headers 指定 Content-Type: application/json。指定 form_fields 時此欄位會被忽略。可省略", default=""),
+    stream: bool = Field(description="是否啟用串流模式，逐 chunk 推送到 UI 子步驟，且回應內容一定會寫入對話資料夾檔案。預設 False", default=False),
+    stream_save_filename: str = Field(description="串流模式下儲存回應內容的檔名（僅檔名，不含路徑）。若省略，系統自動以 http_stream_<timestamp>.txt 命名。", default=""),
+    form_fields: str = Field(
+        description=(
+            "multipart/form-data 欄位，JSON 格式。值若為存在的檔案路徑則自動以二進位上傳，否則當普通字串。\n"
+            "例如：{\"file\": \"audio.mp3\", \"model\": \"whisper-1\", \"language\": \"zh\"}\n"
+            "指定後，body 參數會被忽略。檔案必須位於對話資料夾或使用者 user_profiles 目錄內。可省略。"
+        ),
+        default=""
+    ),
+) -> str:
+    """發送 HTTP 請求。支援串流回應，串流內容會即時顯示在 UI 子步驟中（最新 200 字元）。
+    可透過 form_fields 以 multipart/form-data 方式上傳檔案並附帶其他欄位。
+    目標 URL 若符合內部服務白名單，系統自動注入 Authorization header，key 明文不對外暴露。"""
+    import aiohttp
+
+    ALLOWED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+    STREAM_DISPLAY_LIMIT = 200
+
+    method = method.upper()
+    if method not in ALLOWED_METHODS:
+        return f"錯誤：不支援的 HTTP 方法 '{method}'，請使用 {', '.join(sorted(ALLOWED_METHODS))} 之一。"
+
+    # 解析 headers
+    parsed_headers: dict = {}
+    if headers.strip():
+        try:
+            parsed_headers = json.loads(headers)
+        except json.JSONDecodeError as e:
+            return f"錯誤：headers 不是有效的 JSON 格式：{e}"
+
+    # 自動注入內部服務憑證（依 URL 前綴比對白名單）
+    for base_url, inject_headers in _get_internal_auth_rules():
+        if url.startswith(base_url):
+            # 防止 Agent 自帶 Authorization 覆蓋內部憑證
+            if any(k.lower() == "authorization" for k in parsed_headers):
+                return "錯誤：存取內部服務時，headers 不得自帶 Authorization 欄位。"
+            parsed_headers.update(inject_headers)
+            break
+
+    # 解析 body
+    request_kwargs: dict = {}
+    if body.strip():
+        request_kwargs["data"] = body
+
+    # multipart/form-data 模式
+    if form_fields.strip():
+        try:
+            parsed_form = json.loads(form_fields)
+        except json.JSONDecodeError as e:
+            return f"錯誤：form_fields 不是有效的 JSON 格式：{e}"
+
+        ctx_data = _session_ctx.get()
+        user_id = ctx_data["user_id"]
+        conversation_folder = get_conversation_folder()
+        allowed_roots = [os.path.realpath(conversation_folder)]
+        if user_id:
+            allowed_roots.append(os.path.realpath(get_user_profile_dir(user_id)))
+
+        upload_form = aiohttp.FormData()
+        for field_name, field_value in parsed_form.items():
+            if field_name == "file":
+                candidate = str(field_value)
+                if os.path.isabs(candidate):
+                    src_abs = os.path.realpath(candidate)
+                else:
+                    src_abs = os.path.realpath(os.path.join(conversation_folder, candidate))
+                if not _check_path_in_allowed_roots(src_abs, allowed_roots):
+                    return "存取拒絕：file 的檔案路徑只能指向自己的對話資料夾或 user_profiles 目錄。"
+                if not os.path.isfile(src_abs):
+                    return f"上傳失敗：檔案不存在：{field_value}"
+                upload_form.add_field(
+                    field_name,
+                    open(src_abs, "rb"),
+                    filename=os.path.basename(src_abs),
+                )
+            else:
+                upload_form.add_field(field_name, str(field_value))
+
+        request_kwargs = {"data": upload_form}
+
+    # 讀取 proxy 設定
+    if url.startswith("https://"):
+        proxy = os.getenv("TOOL_HTTPS_PROXY") or os.getenv("TOOL_HTTP_PROXY") or None
+    else:
+        proxy = os.getenv("TOOL_HTTP_PROXY") or os.getenv("TOOL_HTTPS_PROXY") or None
+
+    # 取得目前的 cl.step（供串流子步驟使用）
+    parent_step = None
+    if stream:
+        try:
+            import chainlit as cl
+            parent_step = cl.context.current_step
+        except Exception:
+            pass
+
+    full_text = ""
+    try:
+        timeout = aiohttp.ClientTimeout(connect=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.request(
+                method, url,
+                headers=parsed_headers or None,
+                proxy=proxy,
+                **request_kwargs
+            ) as response:
+                status_line = f"HTTP {response.status} {response.reason}"
+                # 擷取關鍵 response headers（最多 5 個）
+                key_headers = list(response.headers.items())[:5]
+                header_lines = "\n".join(f"{k}: {v}" for k, v in key_headers)
+
+                if stream:
+                    async for chunk in response.content.iter_chunked(1024):
+                        decoded = chunk.decode("utf-8", errors="replace")
+                        full_text += decoded
+                        if parent_step:
+                            parent_step.output = full_text[-STREAM_DISPLAY_LIMIT:]
+                            await parent_step.update()
+                else:
+                    full_text = await response.text()
+
+        saved_file_info = ""
+        if stream:
+            import time as _time
+            conv_folder = get_conversation_folder()
+            if stream_save_filename.strip():
+                save_name = os.path.basename(stream_save_filename.strip())
+            else:
+                save_name = f"http_stream_{int(_time.time())}.txt"
+            save_abs = os.path.join(conv_folder, save_name)
+            with open(save_abs, "w", encoding="utf-8") as _f:
+                _f.write(full_text)
+            saved_file_info = f"\n[串流內容已寫入檔案：{save_name}]"
+
+        return f"{status_line}\n{header_lines}\n\n{full_text}{saved_file_info}"
+
+    except aiohttp.ClientError as e:
+        error_detail = repr(e) if not str(e) else str(e)
+        return f"HTTP 請求失敗：{type(e).__name__}: {error_detail}"
+
+
 # ── AgentSkills：activate_skill 工具 ──
 # 每個技能最多列出的資源檔案數，超過則截斷並提示
 RESOURCES_MAX = 50
 
 @mcp.tool()
 async def activate_skill(
-    ctx: Context,
     skill_name: str = Field(description="技能名稱，與可用技能清單中的 name 相同")
 ) -> str:
     """載入指定技能的完整指令。當任務符合某個技能的描述時呼叫此工具。"""
 
-    session_id = ctx.request_context.request.headers.get("X-Session-Id")
+    session_id = _session_ctx.get()["session_id"]
     print('session_id', session_id)
 
     # 從 session registry 取出該 session 的技能目錄
@@ -609,6 +920,13 @@ async def activate_skill(
     if truncated:
         resources_info["note"] = f"listing truncated, {RESOURCES_MAX}+ files in directory"
 
+    # 替換 SKILL.md 中的環境變數占位符。
+    # 只替換明確白名單的 key，避免 {任意key} 被用來探測其他環境變數。
+    _SKILL_ENV_WHITELIST = ["BASE_URL"]
+    for _key in _SKILL_ENV_WHITELIST:
+        _val = os.getenv(_key, "")
+        body = body.replace(f"${{{_key}}}", _val)
+
     skill_dir_rel = os.path.relpath(skill.skill_dir, _project_root).replace("\\", "/")
     return (
         f"{body}\n\n"
@@ -617,40 +935,267 @@ async def activate_skill(
         f"可用資源: {json.dumps(resources_info, ensure_ascii=False)}"
     )
 
-async def get_conversation_folder(ctx: Context):
-    roots = await ctx.session.list_roots()
-    conversation_folder = f'.files/{roots.roots[0].uri.host}'
-    return conversation_folder
+def get_conversation_folder() -> str:
+    return _session_ctx.get()["conversation_folder"]
 
-async def _list_files_internal(root_folder: str):
+async def _list_files_internal(root_folder: str, offset: int = 0, limit: int = 200):
     """內部函數：列出指定資料夾中的檔案，供多個工具重用"""
     try:
         if not os.path.exists(root_folder):
             return "資料夾不存在"
-        
+
+        all_items = sorted(os.listdir(root_folder))
+        total = len(all_items)
+        page_items = all_items[offset:] if limit <= 0 else all_items[offset: offset + limit]
+
+        if not page_items:
+            return "資料夾是空的" if total == 0 else f"沒有更多項目（共 {total} 個）"
+
         files = []
-        for item in os.listdir(root_folder):
+        for item in page_items:
             item_path = os.path.join(root_folder, item)
             if os.path.isfile(item_path):
-                # 獲取檔案大小
                 size = os.path.getsize(item_path)
                 size_str = f"{size:,} bytes"
                 if size > 1024:
                     size_str = f"{size/1024:.1f} KB"
                 if size > 1024*1024:
                     size_str = f"{size/(1024*1024):.1f} MB"
-                
                 files.append(f"{item} ({size_str})")
             elif os.path.isdir(item_path):
                 files.append(f"{item}/ (資料夾)")
-        
-        if not files:
-            return "資料夾是空的"
-        
-        return "檔案列表:\n" + "\n".join(files)
-    
+
+        end = offset + len(page_items)
+        header = f"[第 {offset + 1}–{end} 個，共 {total} 個]\n\n"
+        result = header + "檔案列表:\n" + "\n".join(files)
+        if end < total:
+            result += f"\n\n（還有更多項目，可使用 offset={end} 繼續列出）"
+        return result
+
     except Exception as e:
         return f"列出檔案時發生錯誤: {str(e)}"
+
+@mcp.tool()
+async def write_file(
+    path: str = Field(description=(
+        "寫入路徑：\n"
+        "- 對話資料夾內：直接填檔名（例如 output.md）\n"
+        "- 記憶目錄：user_profiles/{user_id}/memory/filename.md\n"
+        "  記憶目錄規則：只允許 .md 副檔名；內容檔上限 4KB；MEMORY.md 索引上限 25KB/200行"
+    )),
+    content: str = Field(description="寫入的完整內容"),
+) -> str:
+    """在對話資料夾或使用者記憶目錄中寫入或覆蓋檔案。
+    記憶目錄寫入：
+    - user_profiles/{user_id}/memory/MEMORY.md：更新記憶索引（每行：- [標題](file.md) — 一行摘要）
+    - user_profiles/{user_id}/memory/filename.md：記憶內容檔（含 YAML frontmatter: name/description/type）
+    - 新建記憶檔後需同步更新 MEMORY.md；保存前先 list_files(directory="memory") 確認是否有可更新的現有記憶
+    """
+    ctx_data = _session_ctx.get()
+    user_id = ctx_data["user_id"]
+    conversation_folder = get_conversation_folder()
+
+    norm = path.replace("\\", "/").lstrip("/")
+    memory_dir_abs = os.path.realpath(get_user_memory_dir(user_id))
+    conv_abs = os.path.realpath(conversation_folder)
+
+    # 解析輸入路徑為絕對路徑
+    if os.path.isabs(path):
+        target_abs = os.path.realpath(path)
+    elif norm.startswith("user_profiles/") or "memory/" in norm:
+        target_abs = os.path.realpath(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), norm
+        ))
+    else:
+        target_abs = os.path.realpath(os.path.join(conversation_folder, norm))
+
+    # Memory 目錄寫入
+    if target_abs.startswith(memory_dir_abs + os.sep) or target_abs == memory_dir_abs:
+        filename = os.path.basename(target_abs)
+        if filename == "MEMORY.md":
+            return write_memory_index(user_id, content)
+        return write_memory_file(user_id, filename, content)
+
+    # 跨用戶存取保護
+    if "user_profiles" in norm and not target_abs.startswith(memory_dir_abs):
+        return "存取拒絕：不能存取其他使用者的目錄。"
+
+    # 對話資料夾寫入
+    if not (target_abs.startswith(conv_abs + os.sep) or target_abs == conv_abs):
+        return "存取拒絕：只能寫入自己的對話資料夾或記憶目錄。"
+    os.makedirs(os.path.dirname(target_abs), exist_ok=True)
+    with open(target_abs, "w", encoding="utf-8") as f:
+        f.write(content)
+    return f"已寫入：{os.path.basename(target_abs)}"
+
+
+@mcp.tool()
+async def delete_file(
+    path: str = Field(description=(
+        "要刪除的檔案路徑：\n"
+        "- 對話資料夾內：直接填檔名\n"
+        "- 記憶目錄：user_profiles/{user_id}/memory/filename.md\n"
+        "  刪除記憶檔後需同步更新 MEMORY.md 移除對應條目"
+    )),
+) -> str:
+    """刪除對話資料夾或記憶目錄中的指定檔案。"""
+    ctx_data = _session_ctx.get()
+    user_id = ctx_data["user_id"]
+    conversation_folder = get_conversation_folder()
+
+    norm = path.replace("\\", "/").lstrip("/")
+    memory_dir_abs = os.path.realpath(get_user_memory_dir(user_id))
+    conv_abs = os.path.realpath(conversation_folder)
+
+    # 解析輸入路徑為絕對路徑
+    if os.path.isabs(path):
+        target_abs = os.path.realpath(path)
+    elif norm.startswith("user_profiles/") or "memory/" in norm:
+        # 可能是 memory 路徑，以專案根目錄為 base 解析
+        target_abs = os.path.realpath(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), norm
+        ))
+    else:
+        target_abs = os.path.realpath(os.path.join(conversation_folder, norm))
+
+    # Memory 目錄
+    if target_abs.startswith(memory_dir_abs + os.sep) or target_abs == memory_dir_abs:
+        filename = os.path.basename(target_abs)
+        filepath, err = validate_memory_path(user_id, filename)
+        if err:
+            return f"存取拒絕：{err}"
+        if not os.path.exists(filepath):
+            return f"記憶檔案不存在：{filename}"
+        os.remove(filepath)
+        return f"已刪除記憶檔案：{filename}（請記得更新 MEMORY.md）"
+
+    # 跨用戶存取保護
+    if "user_profiles" in norm and not target_abs.startswith(memory_dir_abs):
+        return "存取拒絕：不能存取其他使用者的目錄。"
+
+    # 對話資料夾刪除
+    if not target_abs.startswith(conv_abs + os.sep):
+        return "存取拒絕：只能刪除自己的對話資料夾或記憶目錄中的檔案。"
+    if not os.path.exists(target_abs):
+        return f"檔案不存在：{os.path.basename(target_abs)}"
+    os.remove(target_abs)
+    return f"已刪除：{os.path.basename(target_abs)}"
+
+
+@mcp.tool()
+async def ask_user_form(
+    form_schema: str = Field(
+        description=(
+            "問卷表單的 JSON 字串。格式範例：\n"
+            '{"title": "標題", "description": "說明（可選）", "questions": [\n'
+            '  {"id": "q1", "question": "完整問題？", "header": "短標籤",\n'
+            '   "type": "single_choice",\n'
+            '   "options": [{"label": "選項", "description": "說明（可選）"}],\n'
+            '   "required": true, "other_option": true},\n'
+            '  {"id": "q2", "question": "多選題？", "header": "Q2",\n'
+            '   "type": "multi_choice",\n'
+            '   "options": [{"label": "A"}, {"label": "B"}],\n'
+            '   "required": false, "other_option": false},\n'
+            '  {"id": "q3", "question": "選擇日期？", "header": "日期",\n'
+            '   "type": "date", "required": true, "other_option": false}\n'
+            "]}\n"
+            "type 可為以下四種：\n"
+            "  - single_choice：單選按鈕列表，建議 2–5 個選項\n"
+            "  - multi_choice：多選 checkbox 列表，限制在 2–5 個選項（選項少、需一眼看清時使用）\n"
+            "  - multi_select_dropdown：多選下拉選單，選項超過 5 個時使用（節省空間）\n"
+            "  - date：日期選擇器（不需要 options）\n"
+            "other_option 為 true 時會自動附加「其他」自由輸入框。\n"
+            "required 為 true 時使用者必須填寫才能提交。"
+        )
+    )
+) -> str:
+    """
+    在 Chainlit 介面顯示動態互動表單，等待使用者填寫後回傳答案。
+    支援單選（single_choice）、多選（multi_choice）、日期（date）三種題型。
+    使用者可提交答案或取消。回傳 JSON 字串。
+    """
+    import uuid
+    import chainlit as cl
+
+    try:
+        schema = json.loads(form_schema)
+    except json.JSONDecodeError as e:
+        return json.dumps({"error": f"form_schema 不是有效的 JSON：{e}"}, ensure_ascii=False)
+
+    if not isinstance(schema.get("questions"), list) or not schema["questions"]:
+        return json.dumps({"error": "questions 不能為空"}, ensure_ascii=False)
+
+    ctx = _session_ctx.get()
+    session_id = ctx.get("session_id", "")
+    if not session_id:
+        return json.dumps({"error": "無法取得 session_id，工具必須在 Chainlit session 中執行"}, ensure_ascii=False)
+
+    if session_id in _pending_forms:
+        return json.dumps({"error": "目前已有一個表單等待回應，請先完成或取消現有表單"}, ensure_ascii=False)
+
+    form_id = str(uuid.uuid4())[:8]
+    event = asyncio.Event()
+    result_holder: dict = {"data": None, "cancelled": False}
+
+    original_props = {
+        **schema,
+        "form_id": form_id,
+        "submitted": False,
+    }
+
+    _pending_forms[session_id] = {
+        "form_id": form_id,
+        "event": event,
+        "result": result_holder,
+        "elem_id": None,
+        "msg_id": None,
+        "original_props": original_props,
+    }
+
+    try:
+        elem = cl.CustomElement(
+            name="DynamicForm",
+            props=original_props,
+            display="inline",
+        )
+        msg = await cl.Message(content="", elements=[elem]).send()
+
+        _pending_forms[session_id]["elem_id"] = elem.id
+        _pending_forms[session_id]["msg_id"] = msg.id
+
+        try:
+            await asyncio.wait_for(event.wait(), timeout=600.0)
+        except asyncio.TimeoutError:
+            return json.dumps({"error": "timeout", "message": "表單等待逾時（10 分鐘）"}, ensure_ascii=False)
+
+        if result_holder["cancelled"]:
+            return json.dumps({"cancelled": True, "message": "使用者取消了表單"}, ensure_ascii=False)
+
+        return json.dumps({
+            "cancelled": False,
+            "answers": result_holder["data"],
+        }, ensure_ascii=False, indent=2)
+
+    finally:
+        _pending_forms.pop(session_id, None)
+
+
+# ── 直接呼叫映射（供 buildin_tool_runner 使用，不走 MCP HTTP）──
+_FUNC_MAP: dict = {
+    "download_file_with_url": download_file_with_url,
+    "list_files": list_files,
+    "transcription": transcription,
+    "read_file": read_file,
+    "download_youtube": download_youtube,
+    "list_youtube_subtitles": list_youtube_subtitles,
+    "attempt_completion": attempt_completion,
+    "query_employee": query_employee,
+    "http_request": http_request,
+    "activate_skill": activate_skill,
+    "write_file": write_file,
+    "delete_file": delete_file,
+    "ask_user_form": ask_user_form,
+}
 
 if __name__ == "__main__":
     # 可以從資料庫取得使用者設定的prompt動態產生mcp tool

@@ -1,36 +1,31 @@
 import os
+import logging
 from fastapi import FastAPI, Request
+
+logging.basicConfig(level=logging.WARNING)
+logging.getLogger("chainlit_app").setLevel(logging.DEBUG)
+logging.getLogger("utils").setLevel(logging.DEBUG)
 from fastapi.responses import JSONResponse
 from starlette.middleware.sessions import SessionMiddleware
 import uvicorn
 from chainlit.utils import mount_chainlit
 import contextlib
-from mcp_servers import (
-    buildin
-)
 from routers import oauth
 
-# buildin_app = buildin.mcp.http_app(path='/mcp')
+# buildin 已改為直接函數呼叫，不再需要 MCP HTTP server
 
-# Create a combined lifespan to manage both session managers
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
-    async with contextlib.AsyncExitStack() as stack:
-        # 使用 AsyncExitStack 來管理多個 async context managers
-        # await stack.enter_async_context(buildin_app.lifespan(app))
-        await stack.enter_async_context(buildin.mcp.session_manager.run())
-        yield
+    yield
 
 
 app = FastAPI(lifespan=lifespan)
 
-# 限制 MCP endpoint 只允許本機連線
-@app.middleware("http")
-async def restrict_mcp_to_localhost(request: Request, call_next):
-    if request.url.path.startswith("/mcp-buildin"):
-        if request.client.host not in ("127.0.0.1", "::1"):
-            return JSONResponse(status_code=403, content={"detail": "Forbidden"})
-    return await call_next(request)
+
+@app.get("/api/config")
+async def get_config():
+    return JSONResponse({"enable_session_history": os.getenv("ENABLE_SESSION_HISTORY", "true").lower() in ("1", "true", "yes")})
+
 
 # 添加 Session 中間件
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET_KEY", "your-secret-key-here"))
@@ -38,8 +33,6 @@ app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET_KEY",
 # 註冊路由器
 app.include_router(oauth.router, prefix="/api/oauth", tags=["OAuth"])
 
-# app.mount("/mcp-buildin", buildin_app)
-app.mount("/mcp-buildin", buildin.mcp.streamable_http_app())
 mount_chainlit(app=app, target="chainlit_app/app.py", path="/")
 
 if __name__ == '__main__':

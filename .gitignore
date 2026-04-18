@@ -1,3 +1,7 @@
+user_profiles/*/memory/*.md
+user_profiles/*/sessions/*.jsonl
+agentskills/
+claude-code-source-code/
 .files/
 .chainlit/
 static/
