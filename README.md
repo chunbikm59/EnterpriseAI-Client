@@ -1,120 +1,204 @@
 # EnterpriseAI-Client
 
-🎯 **為企業打造的 AI Client，支援 MCP 協定、文件與圖片解析，完美解決企業對公有 AI 工具的安全疑慮。**
+**為企業打造的 AI Client，示範如何在企業環境中安全部署 LLM，並透過 MCP 協定連結內部系統。**
 
 ---
 
-## 📘 專案簡介
+## 專案定位
 
-許多企業因隱私與資安政策，禁止使用 ChatGPT、Claude 等公有 AI 平台，僅允許使用內部符合公司政策的 LLM 與 AI 工具。然而這些工具有些功能有限，甚至缺乏檔案上傳、圖片辨識、多媒體處理與企業內其他系統工具整合能力。
+許多企業因資安政策禁止直接使用 ChatGPT、Claude 等公有 AI 平台，但自建的內部工具又功能有限，缺乏檔案解析、多媒體處理與系統整合能力。
 
-**EnterpriseAI-Client** 的目標是示範如何建立一個 AI Client，支援在企業實務應用中所需的基本功能，並透過 **MCP（Model Context Protocol）** 協定，連結公司內部系統與工具，讓企業能快速導入並持續堆疊 LLM 的能力，實際處理內部業務流程。符合企業對資安、可控性與擴充性的需求。
+**EnterpriseAI-Client** 是一個可直接部署到企業內部的 AI 對話介面，以實際解決下列問題為目標：
 
----
-
-## 🧠 主要功能
-
-- ✅ **支援 MCP（Model Context Protocol）**  
-  將 LLM 與企業內部系統整合，實現雙向溝通。支援 Streamable HTTP 與 stdio 兩種連線方式，支援 MCP 的 Tool、Roots、Elicitation。
-
-- ✅ **圖片與文件解析**  
-  支援 `.pdf`, `.docx`, `.pptx`, `.xlsx` 等企業文書常見格式，自動轉為 Markdown 供 AI 理解。
-
-- ✅ **自定義 Prompt 動態註冊成 MCP Tool**（現已推薦使用 Agent Skills 取代）
-  透過 `user_custom_prompt.py` 讓使用者可以動態註冊自定義的 prompt 成為 MCP 工具，模型可根據情境自動選擇相關的 prompt 來理解複雜流程。
-
-- ✅ **Agent Skills — 新增自定義流程管理**
-  現為推薦的流程自動化方式，取代舊有的自定義 Prompt 機制。透過 Anthropic Agent Skills 標準，以結構化方式定義複雜的多步驟流程，讓模型能根據情境自動選用對應的 Skill 並執行任務。詳見 [system_skills/](system_skills/) 與 [user_profiles/](user_profiles/) 目錄。
-
-- ✅ **影片轉錄與多媒體語音轉文字（STT）**  
-  支援語音/影片檔案內容自動轉錄，適用於會議錄影、影音檔案等多媒體資料。
-
-- ✅ **第三方登入（OAuth）範例**  
-  提供 OAuth 登入範例，協助企業整合內部 SSO 或第三方認證機制。
+- 連接企業自有的 LLM（OpenAI 相容 API）或外部模型（Anthropic、OpenAI）
+- 透過 MCP 協定連結公司內部系統（ERP、HR、排程工具等）
+- 生成 HTML / PPT 等文件成果，並在介面中即時渲染預覽
 
 ---
 
-## 🏢 使用情境
+## 核心功能
 
+### Artifact 生成與渲染
 
-- 🧪 **圖像辨識與解釋 — 從缺陷分析到自動通報**  
-  上傳產品瑕疵報告或化學成分圖表後，多模態 AI 模型提取圖表數值、紀錄到資料庫，也可選擇呼叫內部的分析工具得出可能成因與負責單位。再透過連結任務發派系統通報負責該製程的生產站點人員進行調查與處理。這一切過程都在同個App中完成，使用者隨時可以介入調整流程。
+這是本專案最具特色的功能——AI 不只回傳文字，還能直接生成可互動的視覺成果。
 
+#### HTML Artifact
+- AI 呼叫 `render_html` 工具生成 HTML，系統自動在側邊欄以 `<iframe>` 渲染
+- 支援版本歷史：每次修改生成新版本，可在下拉選單切換回顧
+- 一鍵「發布」到公開網址（`/p/{token}`），無需登入即可分享，永久連結、強快取
 
-- 🎤 **會議影音摘要（開發中）— 從摘要到任務追蹤**  
-  AI 轉錄影片後，會自動從內容中抓出決策與行動項，使用者此時可選擇介入修改任務內容或是調整執行人員，接著連結企業人資資料庫對照實際員工身份，再透過連結團隊慣用的任務追蹤工具進行任務發布與通知。
+#### PPT Artifact
+- AI 生成 PptxGenJS 腳本，前端瀏覽器本地執行腳本並產生 `.pptx` 二進位
+- 生成後自動上傳後端，由 LibreOffice 轉 PDF，再以 PyMuPDF 逐頁截圖
+- 每張投影片縮圖即時顯示在對話介面中，可一鍵下載完整 `.pptx` 檔
+- 串流進度條：腳本生成中即顯示佔位卡片動畫與已接收字元數
 
-- 📝 **自定義流程自動化 — 從簡短指令到複雜流程執行**  
-  透過自定義 Prompt 功能，使用者可以用簡短的命令（如「幫我請假」）觸發模型自主查看相關 prompt，了解完整的請假流程並自動執行，包括系統操作、表單填寫、截圖確認等步驟。
+#### 工具生成圖片 / 影片截圖
+- AI 呼叫工具（如PPT轉圖片、影片畫面擷取）後，系統自動偵測 `artifacts/` 目錄的新圖片
+- 圖片直接 inline 嵌入對話中，同時作為視覺內容再次傳給 AI 讓後續對話可以參照
 
-## 🛠️ 技術架構
+#### 文件解析與上傳
 
-- **前端介面**：Chainlit
-- **後端服務**：FastAPI
-- **檔案處理**：`markitdown`, `docling`
-- **語音處理（規劃中）**：`ffmpeg`, `whisper`, `faster-whisper`
+- 支援 `.pdf`, `.docx`, `.pptx`, `.xlsx` 等企業常見格式，自動轉為 Markdown 提供 AI 理解
+- 支援圖片上傳，以 base64 高畫質模式傳給多模態模型
+- 所有上傳/生成的檔案儲存於用戶個人目錄，透過帶簽章 URL 存取
 
----
+#### MCP 協定整合
 
-## 🗺️ Roadmap
+- 支援 **Streamable HTTP** 與 **stdio** 兩種連線方式
+- 支援 MCP Tool / Roots / Elicitation
+  - **Tool**：動態呼叫企業內部 API、資料庫查詢、系統操作等
+  - **Roots**：取得對話目錄路徑，讓工具知道上傳/生成的檔案位置
+  - **Elicitation**：執行敏感操作前彈出確認框，讓人類保有最終決策權
 
-| 功能項目                             | 狀態    |
-|----------------------------------|---------|
-| ✅ MCP 協定支援（含 Tool, Roots, Elicitation） | 已完成 |
-| ✅ 檔案解析（PDF/Office → Markdown） | 已完成 |
-| ✅ 支援圖片上傳                | 已完成 |
-| ✅ 可自訂Prompt動態註冊成mcp tool讓模型自主取得相關的prompt（已由 Agent Skills 取代）|已完成|
-| ✅ Agent Skills 支援（新增自定義流程管理）| 已完成 |
-| ✅ 影片轉錄與多媒體語音轉文字（STT） | 已完成 |
----
+### 記憶機制
 
-## 🔧 MCP 工具開發
+對話結束後，AI 自動在背景以獨立的 sub-agent 分析本輪對話，將值得保留的資訊（使用者偏好、專案背景、工作流程等）寫入用戶個人記憶目錄。下次對話開始時，系統根據使用者輸入的語意，用輕量模型從記憶索引中選出最相關的記憶注入上下文，讓 AI 能跨對話記住使用者。
 
-### 支援 Tool、Roots、Elicitation
+- **萃取**：每輪結束後 fire-and-forget，fork 主對話歷史讓 sub-agent 判斷是否需要新增或更新記憶檔
+- **預取**：新對話開始時，以使用者訊息語意比對記憶 description，最多注入 5 個最相關記憶（上限 20KB / 輪）
+- **互斥保護**：主 LLM 若本輪已主動寫記憶，背景萃取自動跳過，避免重複
 
-本專案支援 MCP 協定下的 Tool、Roots、Elicitation 功能：
-- **Tool**：可註冊自定義 prompt、API、或內部工具，讓模型根據需求自動選用。
-- **Roots**： 主要用於獲得當前對話的資料夾路徑，方便掌握本次對話所上傳、生成的檔案狀況。
-- **Elicitation**：可主動詢問使用者、在AI進行敏感操作前(如寫入或修改)讓人類使用者可以做最後確認。
+### 自動上下文壓縮
 
-### 自定義 Prompt 動態註冊
+長對話 token 數接近模型上限時自動觸發：系統 fork 當前對話，呼叫 LLM 生成結構化摘要（含目標、關鍵決策、待辦事項、當前進度等），再以「摘要 + 最近 N 輪」取代完整歷史，壓縮後繼續對話而不中斷。
 
-`mcp_servers/user_custom_prompt.py` 提供了一個強大的功能，讓您可以動態註冊自定義的 prompt 成為 MCP 工具：
+- 壓縮觸發閾值、保留輪數、context window 大小均可透過環境變數調整
+- 每輪結束時記錄 token checkpoint，壓縮時精確計算各輪成本，動態決定保留哪幾輪最划算
 
-#### 主要特色
-- **動態註冊**：透過 `register_mcp_tool()` 函數動態創建 MCP 工具
-- **情境感知**：模型可根據使用者的問題自動選擇相關的 prompt
-- **流程自動化**：用簡短指令觸發複雜的多步驟流程
+### Agent Skills — 流程自動化
 
-#### 使用範例
-```python
-# 註冊一個請假流程的 prompt
-register_mcp_tool(
-    func_name="prompt_1", 
-    describe="請假流程",  # 這會影響模型是否能根據情境選擇正確的prompt
-    return_string='''
-        1. 先到myHR系統(http:myhr)點擊請假，未指定就預設選擇特休假
-        2. 保存假單->送簽
-        3. 截圖確認已送出的假單
-        4. 到部門行事曆標記請假並截圖確認
-    ''')
+以結構化 Markdown 定義複雜多步驟流程，AI 根據情境自動選用對應 Skill：
+
+```
+system_skills/
+  pptgenjs/            # PPT 生成流程規範
+  frontend-design/     # 前端設計 HTML 生成規範
+  whisper-transcription/ # 語音轉文字流程（需搭配 llm_proxy 專案）
 ```
 
-當使用者輸入「幫我請假」時，模型會自動：
-1. 識別這是請假相關的需求
-2. 載入對應的 prompt 了解完整流程
-3. 按步驟執行請假操作
-4. 提供截圖確認每個步驟
+使用情境：使用者輸入「幫我整理這份會議錄音重點並做成簡報」，AI 自動串接 STT → 摘要 → PPT 生成三個流程。
+
+> **注意**：`whisper-transcription` Skill 的串流轉錄功能（NDJSON 逐段回傳）需搭配另一個專案 **llm_proxy**，該 Proxy 負責提供與 OpenAI Audio Transcriptions API 相容的 Whisper 端點並支援串流輸出。本專案直接對接其 `/audio/transcriptions`，不需修改 Skill 本身。
+
+### 語音 / 影片轉錄 × 圖文報告生成
+
+這是幾個工具串接起來才能達成的複合場景，也是本專案最能展示「AI 工作流程」的功能：
+
+1. **轉錄**：上傳線上會議錄影（或貼上影片路徑），AI 呼叫 Whisper 轉錄，取回帶時間戳的逐段文字（SRT / NDJSON 格式）
+2. **分析**：AI 閱讀全文，找出重要決策、關鍵畫面對應的時間點
+3. **截圖**：AI 呼叫內建的 `video_screenshot` 工具，對這些時間點用 ffmpeg 逐一截圖，圖片自動嵌入對話上下文
+4. **生成成果**：AI 看著截圖 + 摘要，輸出圖文並茂的 Markdown 會議紀錄，或直接呼叫 PPT 工具，把截圖嵌入對應投影片
+
+關鍵技術細節：
+- 截圖後系統偵測到 `artifacts/` 新圖片，自動 inline 顯示並以 base64 重新注入對話歷史，AI 即可「看到」畫面
+- PPT 生成走 PptxGenJS 腳本路線，截圖路徑以 base64 直接寫入腳本，生成完整帶圖的 `.pptx`
+- 整個流程在同一個對話中完成，使用者可隨時介入調整截圖時間點或修改摘要
 
 ---
 
-## 🔧 安裝與執行
+## 使用者資料夾結構
 
-> 本專案使用 Python 3.13 開發測試
+每位使用者有獨立的隔離目錄，所有資料在本地伺服器管理，不外傳：
+
+```
+user_profiles/
+└── {user_id}/
+    ├── memory/                          # 跨對話記憶檔
+    │   ├── MEMORY.md                    # 記憶索引（預取時掃描）
+    │   ├── user_role.md                 # 使用者背景記憶
+    │   └── feedback_*.md                # 工作偏好記憶
+    ├── skills/                          # 使用者自訂 Agent Skills
+    └── conversations/
+        └── {conversation_id}/
+            ├── history.jsonl            # 對話紀錄（含 LLM 訊息與 UI 事件）
+            ├── uploads/                 # 使用者上傳的檔案
+            │   └── 20260426T103012_report.pdf
+            └── artifacts/               # 工具 / AI 產出物
+                ├── chart.png            # 工具生成圖片（自動 inline 嵌入對話）
+                ├── slide_001.png        # PPT 投影片截圖
+                └── {pptx_id}.pptx      # 生成的簡報檔
+```
+
+- `history.jsonl`：每行一筆 JSON，類型包含 `session_meta`、`message`、`ui_event`（截圖、側邊欄更新等）、`title`
+- `artifacts/`：MCP 工具的輸出落地點，agent 每輪結束後自動掃描新增檔案並嵌入對話
+- 所有檔案透過帶簽章 URL 存取（`/api/user-files/`），未登入無法直接存取
+
+---
+
+## 技術架構
+
+| 層次 | 技術 |
+|------|------|
+| 對話介面 | [Chainlit](https://chainlit.io/)（含 ElementSidebar、CustomElement） |
+| 後端 API | FastAPI |
+| 文件解析 | markitdown + docling + PyMuPDF |
+| PPT 後端渲染 | LibreOffice（headless）→ PyMuPDF 截圖 |
+| PPT 前端生成 | PptxGenJS（瀏覽器執行，完整相容 PowerPoint） |
+| 語音處理 | ffmpeg + whisper / faster-whisper |
+| 對話儲存 | SQLite（Alembic 管理 schema） |
+
+---
+
+## 使用情境示範
+
+### 圖像辨識與自動通報
+
+上傳產品瑕疵報告或成分圖表，AI 提取數值、寫入資料庫，並透過 MCP 呼叫內部任務發派系統通報負責人員。整個流程在同一個對話介面完成，使用者隨時可以介入調整。
+
+### 會議錄影 → 圖文並茂的簡報 / 會議紀錄
+
+使用者上傳或輸入線上會議錄影路徑，輸入一句「幫我整理成圖文簡報」，AI 自動：
+
+1. Whisper 轉錄影片，取得含時間戳的完整文字
+2. 分析內容，找出值得截圖的關鍵時間點（決策宣布、圖表說明、白板演示）
+3. 批次截圖，圖片自動嵌入對話讓 AI 確認畫面內容
+4. 生成圖文 Markdown 會議紀錄，或直接輸出每頁都有截圖的 `.pptx` 簡報
+
+→ 整個流程在同一個對話中完成，使用者可隨時介入調整截圖時間點或修改摘要。
+
+### 會議摘要到任務追蹤
+
+AI 轉錄影片 → 擷取決策與行動項 → 使用者可介入修改 → 連結 HR 資料庫對照員工身份 → 透過 MCP 發布任務通知。
+
+### 簡單指令觸發複雜流程
+
+使用者輸入「幫我請假」，AI 透過 Agent Skill 了解請假流程，自動操作 HR 系統、填寫表單，並截圖確認每個步驟。
+
+---
+
+## 安裝與執行
+
+> 本專案使用 Python 3.13 開發
 
 ```bash
-# 2. 安裝
+# 安裝相依套件
 pip install -r requirements.txt
 
-# 3. 啟動服務
+# 設定環境變數
+cp .env.example .env
+# 編輯 .env，填入 LLM API 金鑰等設定
+
+# 啟動服務
 python main.py
+```
+
+服務啟動後預設於 `http://localhost:8000` 提供對話介面。
+
+---
+
+## Roadmap
+
+| 功能 | 狀態 |
+|------|------|
+| MCP 協定支援（Tool / Roots / Elicitation） | 已完成 |
+| 文件解析（PDF / Office → Markdown） | 已完成 |
+| 圖片上傳與多模態辨識 | 已完成 |
+| HTML Artifact 生成、渲染、版本管理與發布 | 已完成 |
+| PPT Artifact 生成、縮圖預覽與下載 | 已完成 |
+| 工具生成圖片 inline 嵌入對話 | 已完成 |
+| 影片截圖自動嵌入並回傳 AI | 已完成 |
+| Agent Skills 流程自動化 | 已完成 |
+| 影片 / 語音轉錄（STT） | 已完成 |
+| 對話歷史持久化（SQLite） | 已完成 |
+| OAuth / SSO 登入範例 | 已完成 |

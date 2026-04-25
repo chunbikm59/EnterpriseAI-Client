@@ -22,7 +22,7 @@ SELECT_MEMORIES_SYSTEM_PROMPT = (
     "回傳 JSON：{\"selected_memories\": [\"file1.md\", \"file2.md\"]}\n\n"
     "規則：\n"
     "- 只選「明確有用」的記憶，若不確定則不選，寧缺勿濫\n"
-    "- 若無相關記憶，回傳空陣列\n"
+    "- 若無相關記憶，回傳空陣列{\"selected_memories\": []}\n"
     "- 若清單中有最近正在使用的工具的參考文件，不選（除非含 gotcha/已知問題）"
 )
 
@@ -124,8 +124,13 @@ async def _select_relevant_memories(
         # 過濾非法 filename
         return [f for f in selected if isinstance(f, str) and f in valid_filenames]
 
-    except Exception:
-        logger.debug("[memory_prefetch] _select_relevant_memories 失敗，靜默降級", exc_info=True)
+    except Exception as e:
+        logger.debug(
+            "[memory_prefetch] _select_relevant_memories 失敗，靜默降級: %s (%s)",
+            str(e),
+            type(e).__name__,
+            exc_info=True,
+        )
         return []
 
 

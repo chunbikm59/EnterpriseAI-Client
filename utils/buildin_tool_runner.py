@@ -3,7 +3,7 @@ buildin 工具的 schema 提取 + 直接呼叫 executor。
 
 使用 FastMCP 公開 API mcp.list_tools() 取得 schema（不走 HTTP），
 執行時直接呼叫 Python 函數（不走 MCP 協議），
-透過 contextvars 傳遞 session context（session_id, user_id, conversation_folder）。
+透過 contextvars 傳遞 session context（session_id, user_id, conversation_id, conversation_folder）。
 """
 from typing import Any, Callable
 from mcp_servers.buildin import mcp, _FUNC_MAP, _session_ctx
@@ -31,6 +31,7 @@ async def call_buildin_tool(
     session_id: str,
     user_id: str,
     conversation_folder: str,
+    conversation_id: str = "",
 ) -> str:
     """
     直接呼叫 buildin 工具函數，透過 contextvars 傳遞 session context。
@@ -49,6 +50,7 @@ async def call_buildin_tool(
     token = _session_ctx.set({
         "session_id": session_id,
         "user_id": user_id,
+        "conversation_id": conversation_id,
         "conversation_folder": conversation_folder,
     })
     try:

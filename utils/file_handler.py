@@ -2,13 +2,16 @@
 
 import asyncio
 import base64
+import io
 import mimetypes
 import os
 
 import aiofiles
+from PIL import Image
 from pygments.lexers import get_lexer_for_filename
 from pygments.util import ClassNotFound
 
+_MAX_IMAGE_SIDE = 1980
 TEXT_PREVIEW_SIZE_LIMIT = 500_000  # 500 KB 以內才側邊欄預覽，超過仍走下載
 _NO_FENCE_ALIASES = frozenset({'text', 'markdown', 'md'})  # 這些別名不加 code fence，直接讓 Chainlit 渲染 markdown
 
@@ -26,22 +29,34 @@ def _get_text_file_info(filename: str) -> tuple[bool, str | None]:
         return mime.startswith('text/'), None
 
 
-async def encode_image(image_path):
-    """非同步編碼圖片為 base64，使用 aiofiles 進行非同步檔案讀取"""
+def _resize_image_bytes(data: bytes, mime: str | None = None) -> bytes:
+    """若圖片最長邊 > _MAX_IMAGE_SIDE，以等比縮放壓縮後回傳新 bytes；否則原樣回傳。"""
+    img = Image.open(io.BytesIO(data))
+    w, h = img.size
+    if max(w, h) <= _MAX_IMAGE_SIDE:
+        return data
+    scale = _MAX_IMAGE_SIDE / max(w, h)
+    img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+    buf = io.BytesIO()
+    fmt = img.format or ("PNG" if (mime or "").endswith("png") else "JPEG")
+    img.save(buf, format=fmt)
+    return buf.getvalue()
+
+
+async def encode_image(image_path, mime: str | None = None):
+    """非同步編碼圖片為 base64，超過 1024px 的圖片會先等比縮放。"""
     async with aiofiles.open(image_path, "rb") as image_file:
         image_data = await image_file.read()
-        result = await asyncio.to_thread(base64.b64encode, image_data)
+    image_data = await asyncio.to_thread(_resize_image_bytes, image_data, mime)
+    result = await asyncio.to_thread(base64.b64encode, image_data)
     return result.decode('utf-8')
 
 
 async def get_files_state(folder_path):
     """取得資料夾中所有檔案的狀態（檔案名稱和修改時間）
 
-    Args:
-        folder_path: 資料夾路徑
-
     Returns:
-        dict: {filename: mtime} 格式的字典，記錄每個檔案的修改時間
+        dict: {filename: mtime}
     """
     files_state = {}
     if folder_path and await asyncio.to_thread(os.path.exists, folder_path):
