@@ -91,7 +91,7 @@ async def prefetch_relevant_memories(
         result.append({"filename": filename, "content": content})
         total_bytes += b
 
-    logger.debug("[memory_prefetch] 注入 %d 個記憶檔，共 %d bytes", len(result), total_bytes)
+    logger.debug("[memory_prefetch] 預取完成：%d 個記憶檔，共 %d bytes，等待注入時機", len(result), total_bytes)
     return result
 
 
@@ -113,12 +113,14 @@ async def _select_relevant_memories(
                 {"role": "system", "content": SELECT_MEMORIES_SYSTEM_PROMPT},
                 {"role": "user", "content": f"Query: {query}\n\nAvailable memories:\n{manifest}"},
             ],
-            max_tokens=256,
+            max_tokens=2560,
             temperature=0,
             response_format={"type": "json_object"},
         )
 
-        text = response.choices[0].message.content or ""
+        text = (response.choices[0].message.content or "").strip()
+        if not text:
+            return []
         parsed = json.loads(text)
         selected = parsed.get("selected_memories", [])
         # 過濾非法 filename

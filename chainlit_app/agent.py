@@ -368,9 +368,9 @@ async def run(message_history, initial_msg=None):
     elif isinstance(_last_msg.get("content"), str):
         _user_text = _last_msg["content"]
 
-    # 多於單詞才預取（對應 CC：single-word prompts lack enough context）
+    # 超過4字元才預取，相容中英文（split() 對中文無效）
     memory_prefetch_task = None
-    if _user_text and len(_user_text.split()) > 1:
+    if _user_text and len(_user_text) > 4:
         memory_prefetch_task = asyncio.ensure_future(
             prefetch_relevant_memories(user_id, _user_text, already_surfaced)
         )
@@ -481,7 +481,6 @@ async def run(message_history, initial_msg=None):
                         if tool_call.function.arguments:
                             _prev_arg_len = len(tool_calls[tc_id]["arguments"])
                             tool_calls[tc_id]["arguments"] += tool_call.function.arguments
-                            print(tool_call.function.arguments)
 
                             # render_pptx 串流進度：每 200 字元節流推送一次 partial 給前端
                             if tool_calls[tc_id]["name"] == "render_pptx":
@@ -653,13 +652,13 @@ async def run(message_history, initial_msg=None):
                     await check_and_process_new_files(existing_files)
                     existing_files = await get_files_state(os.path.join(file_folder, "artifacts"))
 
-            # ── Memory 層 2：工具執行後注入相關記憶（若預取已完成且尚未注入）──
-            memory_injected_this_turn, already_surfaced, message_history = await consume_memory_prefetch(
-                memory_prefetch_task, memory_injected_this_turn, already_surfaced, message_history
-            )
-            if memory_injected_this_turn:
-                cl.user_session.set("message_history", message_history)
-                cl.user_session.set("memory_surfaced_paths", already_surfaced)
+                # ── Memory 層 2：每個工具執行後檢查注入（對齊 Claude Code 行為）──
+                memory_injected_this_turn, already_surfaced, message_history = await consume_memory_prefetch(
+                    memory_prefetch_task, memory_injected_this_turn, already_surfaced, message_history
+                )
+                if memory_injected_this_turn:
+                    cl.user_session.set("message_history", message_history)
+                    cl.user_session.set("memory_surfaced_paths", already_surfaced)
 
             # ── 自動上下文壓縮（工具執行後，下次 LLM 呼叫前）──
             if not _compressed_this_turn and usage_prompt_tokens and should_compress(usage_prompt_tokens):
@@ -728,6 +727,7 @@ async def run(message_history, initial_msg=None):
             conversation_folder=conversation_folder,
             cursor=_extraction_cursor,
             turns_since_extraction=_turns_since,
+            all_tools=chat_params.get("tools"),
         )
         cl.user_session.set("memory_extraction_cursor", new_cursor)
         cl.user_session.set("memory_turns_since_extraction", new_turns)

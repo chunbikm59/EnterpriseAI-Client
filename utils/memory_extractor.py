@@ -6,22 +6,22 @@
 游標：只分析自上次萃取以來的新訊息。
 
 設計要點：
-- 真正 fork 主對話：傳入完整 message_history（含 system message），append 萃取任務 user message
-  未來換用支援 prompt cache 的 API 後，相同前綴可命中快取
+- 真正 fork 主對話：傳入完整 message_history（含 system message）+ 完整 tools，
+  與主對話 token 序列前綴完全相同，最大化 KV cache 命中率。
 - 預掃描記憶目錄並注入 manifest，省去 agent 的 list_files turn
 - 萃取 user message 包含完整記憶類型定義、examples、不應保存清單、保存流程
 - 游標以訊息數量 index 實作
 
-工具限制：
-- 只允許 write_file / read_file / list_files / delete_file
-- 不允許其他任何工具
+工具限制（事後攔截）：
+- prompt 中已指明只能使用 write_file / read_file / list_files / delete_file
+- 若 LLM 回傳非 ALLOWED_TOOLS 的 tool_call，在執行前攔截並回傳錯誤訊息
 """
 import asyncio
 import json
 import logging
 from datetime import datetime, timezone
 from utils.llm_client import get_llm_client, get_model_setting
-from utils.buildin_tool_runner import call_buildin_tool, get_buildin_tool_schemas
+from utils.buildin_tool_runner import call_buildin_tool
 from utils.memory_manager import list_memory_files, WHAT_NOT_TO_SAVE_SECTION
 
 logger = logging.getLogger(__name__)
@@ -172,6 +172,7 @@ async def extract_memories_background(
     conversation_folder: str,
     cursor: int,
     turns_since_extraction: int,
+    all_tools: list | None = None,
 ) -> tuple[int, int]:
     """背景記憶萃取 — fire-and-forget，回傳更新後的 (cursor, turns_since_extraction)。
 
@@ -183,6 +184,7 @@ async def extract_memories_background(
         conversation_folder: 當前 session 的檔案資料夾
         cursor: 上次萃取時的訊息數量 index
         turns_since_extraction: 自上次萃取以來的回合數（節流用）
+        all_tools: 主對話完整 tools 清單（OpenAI 格式），用於保持 KV cache 前綴一致
 
     Returns:
         (new_cursor, new_turns_since_extraction)
@@ -225,6 +227,7 @@ async def extract_memories_background(
         await _run_extractor(
             user_id, recent_messages, session_id, conversation_folder,
             new_message_count=len(new_visible),
+            all_tools=all_tools or [],
         )
     except Exception:
         logger.debug("[memory_extractor] 萃取發生例外，靜默處理", exc_info=True)
@@ -238,12 +241,13 @@ async def _run_extractor(
     session_id: str,
     conversation_folder: str,
     new_message_count: int,
+    all_tools: list,
 ) -> None:
     """執行記憶萃取。
 
-    以完整 message_history 作為 fork 前綴，最後 append 萃取任務 user message
-    （含記憶 manifest 與完整指引）。
-    未來換用支援 prompt cache 的 Anthropic API 後，相同前綴可命中快取。
+    以完整 message_history + 完整 tools 作為 fork 前綴，與主對話 token 序列相同，
+    最大化 KV cache 命中率。工具限制改為事後攔截：ALLOWED_TOOLS 以外的 tool_call
+    在執行前被攔截並回傳錯誤，不實際執行。
     """
     # 預掃描記憶目錄，注入到萃取 user message，省去 agent 自行呼叫 list_files 的 turn
     try:
@@ -253,26 +257,6 @@ async def _run_extractor(
     except Exception:
         logger.debug("[memory_extractor] 預掃描失敗，降級為無 manifest", exc_info=True)
         existing_memories = ""
-
-    # 取得記憶工具 schema（只允許 ALLOWED_TOOLS）
-    all_schemas = await get_buildin_tool_schemas()
-    memory_tool_schemas = [s for s in all_schemas if s["name"] in ALLOWED_TOOLS]
-    if not memory_tool_schemas:
-        logger.debug("[memory_extractor] 找不到記憶工具 schema，中止")
-        return
-
-    # 轉換為 OpenAI tool 格式
-    openai_tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": s["name"],
-                "description": s["description"],
-                "parameters": s["input_schema"],
-            },
-        }
-        for s in memory_tool_schemas
-    ]
 
     # Fork 主對話：完整 message_history 作為前綴，append 萃取任務 user message
     # System prompt 繼承自 recent_messages[0]（主對話 system message），不另傳
@@ -298,7 +282,7 @@ async def _run_extractor(
         response = await llm.chat.completions.create(
             model=model_setting["model"],
             messages=fork_messages,    # 整包傳入，含主對話 system message
-            tools=openai_tools,
+            tools=all_tools,           # 與主對話相同的完整工具清單，保持 KV cache 前綴一致
             tool_choice="auto",
             max_tokens=1024,
             temperature=0,
