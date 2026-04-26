@@ -37,3 +37,16 @@ class Conversation(Base):
     __table_args__ = (
         Index("ix_conversations_user_updated", "user_id", "updated_at"),
     )
+
+
+class PublishedArtifact(Base):
+    """已發布的 HTML artifact 記錄。"""
+
+    __tablename__ = "published_artifacts"
+
+    token: Mapped[str] = mapped_column(String(32), primary_key=True)
+    artifact_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+    html_file: Mapped[str] = mapped_column(String(64), nullable=False)

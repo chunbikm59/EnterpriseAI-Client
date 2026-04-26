@@ -72,7 +72,6 @@ async def on_reopen_artifact(action: cl.Action):
         if not payload:
             conversation_folder = cl.user_session.get("file_folder", "")
             if conversation_folder:
-                from utils.user_profile import get_conversation_artifacts_dir
                 js_path = os.path.join(
                     get_conversation_artifacts_dir(conversation_folder),
                     f"pptx_{pptx_id}.js",

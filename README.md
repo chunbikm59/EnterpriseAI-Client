@@ -97,9 +97,43 @@ system_skills/
 
 ---
 
+## 上下文工程設計
+
+Context 空間是稀缺資源，本專案的核心設計原則是：**記憶只注入最相關的、工具結果超大就截短、圖片單獨注入不混文字、壓縮時以真實 token 成本而非訊息數量決定保留什麼。**
+
+### 多層記憶系統
+
+預取（Prefetch）→ 注入（Inject）→ 萃取（Extract）三層完全解耦：
+
+- **預取**：每輪開始時，以使用者訊息語意呼叫輕量 LLM（JSON mode），從記憶索引的 `description` frontmatter 中選出最相關的最多 5 個檔案，單輪上限 20KB、整個 session 上限 60KB；以 `already_surfaced` set 防止同 session 重複注入
+- **注入**：工具執行完、下次 LLM 呼叫前才注入，以 `<system-reminder>` 標籤與原始 system prompt 邊界隔開，每輪只注入一次
+- **萃取**：回合結束後 fire-and-forget，fork 完整對話歷史讓 sub-agent 判斷是否要寫記憶；主 LLM 若本輪已寫過記憶則互斥跳過；游標只分析新訊息，避免重複分析舊對話
+
+### Token Checkpoint + 精確 Budget 壓縮
+
+- 每輪結束時記錄 `{"msg_len": int, "tokens": int}` checkpoint（API 精確值，非估算）
+- 觸發壓縮時，以 checkpoint 還原各輪的真實 token 成本，從最新輪往前貪婪選取直到超出 budget
+- Budget 計算：`context window - 觸發閾值 - system tokens - 摘要 tokens - ack tokens`，最後才分配給「保留幾輪」；壓縮後清空 checkpoint 重新累積
+
+### Fork-based 子任務隔離
+
+壓縮和記憶萃取都以 fork 主對話前綴的方式執行：子任務繼承原始 system prompt、前綴與主對話相同（未來可命中 prompt cache）、工具集被明確限制（萃取只允許檔案操作、壓縮完全禁止工具），無法污染主流程。
+
+萃取 fork 另一個效率設計：manifest 預先掃描並注入到 user message，sub-agent 第一輪即可並行 read 所有需要更新的記憶檔，省掉一個額外的 `list_files` turn。
+
+### 工具結果大小控制
+
+工具結果超過 50,000 字元時不內聯，改為寫檔並回傳「摘要 + 前 2000 字預覽 + 路徑」，以 `<tool-result-too-large>` 標籤標記，讓 LLM 知道可以去讀完整內容。`read_file` 本身永遠不觸發此機制（避免遞迴）。
+
+### 圖片的上下文注入
+
+工具結果若含圖片（截圖、PPT 轉圖等），圖片不混在文字工具結果裡，而是單獨以 `image_url` content item 插入 message_history，縮放後轉 base64，讓多模態模型可以「看到」畫面後再繼續推理。
+
+---
+
 ## 使用者資料夾結構
 
-每位使用者有獨立的隔離目錄，所有資料在本地伺服器管理，不外傳：
+每位使用者有獨立的隔離目錄，所有資料在本地伺服器管理：
 
 ```
 user_profiles/
@@ -200,5 +234,5 @@ python main.py
 | 影片截圖自動嵌入並回傳 AI | 已完成 |
 | Agent Skills 流程自動化 | 已完成 |
 | 影片 / 語音轉錄（STT） | 已完成 |
-| 對話歷史持久化（SQLite） | 已完成 |
+| 對話歷史持久化（PostgreSQL） | 已完成 |
 | OAuth / SSO 登入範例 | 已完成 |
