@@ -19,6 +19,7 @@ import asyncio
 import aiofiles
 import subprocess
 import shutil
+import uuid
 from utils.llm_client import get_llm_client, get_model_setting
 from utils.user_profile import get_user_profile_dir, get_user_memory_dir, get_conversation_artifacts_dir
 from utils.signed_url import rewrite_artifact_paths
@@ -1049,9 +1050,9 @@ async def write_file(
     if not target_abs.startswith(artifacts_abs + os.sep):
         return "存取拒絕：只能寫入自己的對話 artifacts/ 資料夾或記憶目錄。"
     os.makedirs(os.path.dirname(target_abs), exist_ok=True)
-    conv_id = ctx_data.get("conversation_id", "")
-    # if conv_id:
-    #     content = rewrite_artifact_paths(content, user_id, conv_id)
+    if target_abs.endswith(".md"):
+        from utils.signed_url import fix_md_relative_paths
+        content = fix_md_relative_paths(content, target_abs)
     with open(target_abs, "w", encoding="utf-8") as f:
         f.write(content)
     return f"已寫入：{os.path.basename(target_abs)}"
@@ -1362,7 +1363,6 @@ async def ask_user_form(
     支援單選（single_choice）、多選（multi_choice）、日期（date）三種題型。
     使用者可提交答案或取消。回傳 JSON 字串。
     """
-    import uuid
     import chainlit as cl
 
     try:
@@ -1464,8 +1464,7 @@ async def render_html(
     if len(html_code.encode("utf-8")) > MAX_HTML_SIZE:
         return "錯誤：HTML 內容超過 500KB 上限，請精簡後重試。"
 
-    import uuid as _uuid
-    artifact_id = f"art_{_uuid.uuid4().hex[:8]}"
+    artifact_id = f"art_{uuid.uuid4().hex[:8]}"
     safe_title = (title or "Artifact").strip()
 
     # 若 html_code 缺少 CSP meta，自動注入白名單 CDN 的 CSP
@@ -1516,7 +1515,7 @@ async def render_pptx(
             "必須使用 pptxgenjs API 建立投影片。CDN bundle 暴露的全域建構函式為 PptxGenJS（注意大小寫）。\n"
             "腳本最後必須呼叫 window.__pptxDone(prs) 傳回 PptxGenJS 實例，\n"
             "以便 element 觸發下載。\n"
-            "圖片嵌入：若需嵌入對話資料夾中的圖片，在 addImage 的 path 或 data 欄位直接寫相對路徑。\n"
+            "圖片嵌入：若需嵌入對話資料夾中的圖片，在 addImage 的 path 欄位直接寫相對路徑。\n"
             "支援 uploads/ 和 artifacts/ 下的圖片，路徑相對於對話資料夾。\n"
             "例如：slide.addImage({ path: 'uploads/photo.png', x:1, y:1, w:4, h:3 })\n"
             "範例：\n"
@@ -1551,8 +1550,7 @@ async def render_pptx(
     if len(pptx_script.encode("utf-8")) > MAX_SCRIPT_SIZE:
         return "錯誤：pptx_script 超過 200KB 上限，請精簡腳本。"
 
-    import uuid as _uuid
-    pptx_id = f"pptx_{_uuid.uuid4().hex[:8]}"
+    pptx_id = f"pptx_{uuid.uuid4().hex[:8]}"
     safe_title = (title or "簡報").strip()
 
     _pending_pptx_renders[session_id] = {
@@ -1568,12 +1566,12 @@ async def render_pptx(
 # ── 直接呼叫映射（供 buildin_tool_runner 使用，不走 MCP HTTP）──
 _FUNC_MAP: dict = {
     "list_files": list_files,
-    "transcription": transcription,
+    # "transcription": transcription,
     "read_file": read_file,
     "download_youtube": download_youtube,
     "list_youtube_subtitles": list_youtube_subtitles,
     # "attempt_completion": attempt_completion,
-    "query_employee": query_employee,
+    # "query_employee": query_employee,
     "http_request": http_request,
     "activate_skill": activate_skill,
     "write_file": write_file,

@@ -72,6 +72,37 @@ def rewrite_relative_paths_in_md(text: str, md_abs_path: str) -> str:
     return text
 
 
+def fix_md_relative_paths(content: str, md_abs_path: str) -> str:
+    """修復 MD 檔案中錯誤的相對路徑前綴。
+
+    當 MD 寫入 artifacts/ 時，LLM 有時會錯誤地加上 artifacts/ 或 uploads/ 前綴：
+      artifacts/image.png  →  image.png            （同目錄圖片）
+      uploads/photo.jpg    →  ../uploads/photo.jpg  （上層 uploads 目錄）
+    只修復路徑實際存在於磁碟的情況，避免誤改合法連結。
+    """
+    md_dir = os.path.dirname(md_abs_path)
+    parent_dir = os.path.dirname(md_dir)
+
+    def fix_path(rel: str) -> str:
+        if rel.startswith(("/", "http://", "https://", "#", "data:")):
+            return rel
+        decoded = urllib.parse.unquote(rel)
+        if decoded.startswith("artifacts/") or decoded.startswith("uploads/"):
+            candidate = os.path.normpath(os.path.join(parent_dir, decoded))
+            if os.path.isfile(candidate):
+                return os.path.relpath(candidate, md_dir).replace("\\", "/")
+        return rel
+
+    def replace_in_link(m: re.Match) -> str:
+        rel = m.group(1)
+        fixed = fix_path(rel)
+        if fixed == rel:
+            return m.group(0)
+        return m.group(0).replace(rel, fixed, 1)
+
+    return re.sub(r'!?\[[^\]]*\]\(([^)]+)\)', replace_in_link, content)
+
+
 class StreamingPathRewriter:
     """在 LLM stream 過程中即時轉換路徑，等遇到安全邊界字元才 flush 輸出。
 

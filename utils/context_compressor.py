@@ -104,14 +104,6 @@ def _select_recent_by_checkpoints(
     return body[kept_start_body_idx:], kept_turns, accumulated
 
 
-def _build_compress_system_addition() -> str:
-    return (
-        "\n\n重要限制：接下來的任務是生成對話摘要。"
-        "你必須只以純文字回應，禁止呼叫任何工具。"
-        "工具呼叫將被拒絕，請直接以 <analysis> 和 <summary> 標籤回應。"
-    )
-
-
 def _build_compress_user_message() -> str:
     return """\
 請為以上對話生成一份詳盡的摘要。
@@ -162,26 +154,15 @@ async def compress_conversation(
         logger.warning("[compressor] body 為空，跳過壓縮")
         return message_history, "", 0
 
-    # 修改 system message，追加禁止工具的指令
-    if system_msg:
-        compress_system = {
-            "role": "system",
-            "content": (system_msg.get("content") or "") + _build_compress_system_addition(),
-        }
-        compress_input = [
-            compress_system,
-            *body,
-            {"role": "user", "content": _build_compress_user_message()},
-        ]
-    else:
-        compress_input = [
-            *body,
-            {"role": "user", "content": _build_compress_user_message()},
-        ]
+    compress_input = [
+        *(([system_msg] if system_msg else [])),
+        *body,
+        {"role": "user", "content": _build_compress_user_message()},
+    ]
 
     compress_params = {
         k: v for k, v in model_setting.items()
-        if k not in ("tools", "tool_choice", "stream_options")
+        if k not in ("stream_options",)
     }
     compress_params["stream"] = False
 
@@ -189,7 +170,11 @@ async def compress_conversation(
         response = await llm_client.chat.completions.create(
             messages=compress_input, **compress_params
         )
-        raw_summary = (response.choices[0].message.content or "") if response.choices else ""
+        assistant_msg = response.choices[0].message if response.choices else None
+        if assistant_msg and assistant_msg.tool_calls:
+            logger.warning("[compressor] LLM 嘗試呼叫工具，攔截並 fallback")
+            return message_history, "", 0
+        raw_summary = (assistant_msg.content or "") if assistant_msg else ""
         summary = _extract_summary(raw_summary)
         # completion_tokens 是摘要輸出的精確 token 數（含 <analysis>，作為保守上界）
         summary_tokens = (

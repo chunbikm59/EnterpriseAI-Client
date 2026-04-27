@@ -11,7 +11,7 @@ from PIL import Image
 from pygments.lexers import get_lexer_for_filename
 from pygments.util import ClassNotFound
 
-_MAX_IMAGE_SIDE = 1980
+_MAX_IMAGE_SIDE = 1280
 TEXT_PREVIEW_SIZE_LIMIT = 500_000  # 500 KB 以內才側邊欄預覽，超過仍走下載
 _NO_FENCE_ALIASES = frozenset({'text', 'markdown', 'md'})  # 這些別名不加 code fence，直接讓 Chainlit 渲染 markdown
 
