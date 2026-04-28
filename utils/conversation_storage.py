@@ -19,6 +19,8 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from utils.user_profile import get_user_conversations_dir
+from utils.models import PublishedArtifact
+from utils.db import SessionLocal
 
 
 def _now_iso() -> str:
@@ -451,8 +453,9 @@ def load_artifact_history(file_path: str, conversation_folder: str) -> list:
                 for el in rec.get("elements", []):
                     if el.get("kind") != "custom" or el.get("name") != "ArtifactChip":
                         continue
-                    artifact_id = el.get("props", {}).get("artifact_id", "")
-                    title = el.get("props", {}).get("title", artifact_id)
+                    props = el.get("props", {})
+                    artifact_id = props.get("payload", {}).get("artifact_id", "") or props.get("artifact_id", "")
+                    title = props.get("title", artifact_id)
                     if not artifact_id or artifact_id in seen:
                         continue
                     html_path = os.path.join(artifacts_dir, f"artifact_{artifact_id}.html")
@@ -466,6 +469,23 @@ def load_artifact_history(file_path: str, conversation_folder: str) -> list:
         return []
     # 最新的排在最前面
     ordered.reverse()
+
+    if ordered:
+        ids = [a["artifact_id"] for a in ordered]
+        try:
+            with SessionLocal() as session:
+                rows = session.query(
+                    PublishedArtifact.artifact_id,
+                    PublishedArtifact.token,
+                ).filter(PublishedArtifact.artifact_id.in_(ids)).all()
+            base_url = os.getenv("CHAINLIT_URL", "http://localhost:8000")
+            url_map = {r.artifact_id: f"{base_url}/p/{r.token}" for r in rows}
+            for a in ordered:
+                if a["artifact_id"] in url_map:
+                    a["published_url"] = url_map[a["artifact_id"]]
+        except Exception:
+            pass
+
     return ordered
 
 

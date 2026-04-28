@@ -137,16 +137,11 @@ async def on_publish_artifact(action: cl.Action):
     public_url = f"{base_url}/p/{token}"
 
     history: list = cl.user_session.get("artifact_history", [])
-    target_index = None
-    for i, h in enumerate(history):
+    for h in history:
         if h["artifact_id"] == artifact_id:
             h["published_url"] = public_url
-            target_index = i
             break
     cl.user_session.set("artifact_history", history)
-
-    if target_index is None:
-        return
 
     return {"published_url": public_url}
 

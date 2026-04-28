@@ -41,8 +41,29 @@ export default function HtmlRenderer() {
     "allow-modals",
   ].join(" ");
 
+  function execCommandCopy(text, onSuccess) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.cssText = "position:fixed;top:0;left:0;width:2em;height:2em;opacity:0;border:none;outline:none;";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.setSelectionRange(0, ta.value.length);
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch (_) {}
+    document.body.removeChild(ta);
+    if (ok) onSuccess();
+  }
+
+  function copyToClipboard(text, onSuccess) {
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(onSuccess).catch(() => execCommandCopy(text, onSuccess));
+    } else {
+      execCommandCopy(text, onSuccess);
+    }
+  }
+
   function handleCopy() {
-    navigator.clipboard.writeText(currentItem.html_code).then(() => {
+    copyToClipboard(currentItem.html_code, () => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
@@ -75,7 +96,7 @@ export default function HtmlRenderer() {
   }
 
   function handleCopyUrl() {
-    navigator.clipboard.writeText(publishedUrl).then(() => {
+    copyToClipboard(publishedUrl, () => {
       setUrlCopied(true);
       setTimeout(() => setUrlCopied(false), 2000);
     });
