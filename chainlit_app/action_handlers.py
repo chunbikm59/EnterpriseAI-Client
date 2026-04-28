@@ -6,7 +6,7 @@ import aiofiles
 import chainlit as cl
 
 from mcp_servers.buildin import _pending_forms
-from chainlit_app.agent import _handle_render_html, _handle_render_pptx, ENABLE_SESSION_HISTORY
+from chainlit_app.agent import _handle_render_html, _handle_render_pptx, _handle_render_markdown, ENABLE_SESSION_HISTORY
 from utils.conversation_storage import append_ui_event
 from utils.user_profile import get_conversation_artifacts_dir
 from utils.artifact_publisher import publish_artifact
@@ -59,9 +59,32 @@ async def on_open_file_preview(action: cl.Action):
 
 @cl.action_callback("reopen_artifact")
 async def on_reopen_artifact(action: cl.Action):
-    """重新開啟 sidebar 顯示指定的 artifact（HTML 或 PPTX）。"""
+    """重新開啟 sidebar 顯示指定的 artifact（HTML / PPTX / Markdown）。"""
     artifact_id = action.payload.get("artifact_id")
     pptx_id = action.payload.get("pptx_id")
+    md_id = action.payload.get("md_id")
+
+    # ── Markdown artifact ──
+    if md_id:
+        md_history: list = cl.user_session.get("md_history", [])
+        payload = next((h for h in md_history if h["md_id"] == md_id), None)
+
+        # 找不到（重新整理後 session 重置）→ 從 ArtifactChip payload 的 file_path 直接讀磁碟
+        if not payload:
+            file_path = action.payload.get("file_path", "")
+            if file_path and os.path.exists(file_path):
+                async with aiofiles.open(file_path, encoding="utf-8") as f:
+                    markdown_content = await f.read()
+                payload = {
+                    "md_id":            md_id,
+                    "markdown_content": markdown_content,
+                    "title":            action.payload.get("title", md_id),
+                    "file_path":        file_path,
+                }
+
+        if payload:
+            await _handle_render_markdown(payload, send_message=False)
+        return
 
     # ── PPTX artifact ──
     if pptx_id:

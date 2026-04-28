@@ -60,6 +60,10 @@ _pending_renders: dict[str, dict] = {}
 # key: Chainlit session_id，value: {"pptx_id": str, "pptx_script": str, "title": str, "slide_count": int}
 _pending_pptx_renders: dict[str, dict] = {}
 
+# ── Markdown Render 暫存機制 ──
+# key: Chainlit session_id，value: {"md_id": str, "markdown_content": str, "title": str, "file_path": str}
+_pending_md_renders: dict[str, dict] = {}
+
 
 def register_session_skills(session_id: str, skills_json: str):
     """在 on_chat_start 時將該 session 的技能目錄（JSON）註冊進來。"""
@@ -1012,6 +1016,7 @@ async def write_file(
     """
     ctx_data = _session_ctx.get()
     user_id = ctx_data["user_id"]
+    session_id = ctx_data.get("session_id", "")
     conversation_folder = get_conversation_folder()
 
     norm = path.replace("\\", "/").lstrip("/")
@@ -1055,6 +1060,19 @@ async def write_file(
         content = fix_md_relative_paths(content, target_abs)
     with open(target_abs, "w", encoding="utf-8") as f:
         f.write(content)
+
+    # .md 寫入後觸發 sidebar 串流渲染
+    if target_abs.endswith(".md") and session_id:
+        md_id = f"md_{uuid.uuid4().hex[:8]}"
+        safe_title = os.path.splitext(os.path.basename(target_abs))[0]
+        _pending_md_renders[session_id] = {
+            "md_id":            md_id,
+            "markdown_content": content,
+            "title":            safe_title,
+            "file_path":        target_abs,
+        }
+        return f"已寫入：{os.path.basename(target_abs)} [RENDER_MARKDOWN_OK] md_id={md_id} title={safe_title}"
+
     return f"已寫入：{os.path.basename(target_abs)}"
 
 

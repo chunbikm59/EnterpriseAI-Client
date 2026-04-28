@@ -32,7 +32,7 @@ from utils.tool_formatter import (
 )
 from chainlit_app.file_handler import check_and_process_new_files
 from utils.signed_url import StreamingPathRewriter
-from mcp_servers.buildin import _pending_renders, _pending_pptx_renders
+from mcp_servers.buildin import _pending_renders, _pending_pptx_renders, _pending_md_renders
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +209,40 @@ async def _handle_render_pptx(payload: dict, send_message: bool = True):
                     "display": "inline",
                 }],
             )
+
+
+async def _handle_render_markdown(payload: dict, send_message: bool = True):
+    """將 write_file .md 的 payload 推送到 ElementSidebar。
+    send_message=False 時只更新 sidebar，不送通知訊息（用於重開已存在的 markdown artifact）。
+    """
+    md_id            = payload["md_id"]
+    markdown_content = payload["markdown_content"]
+    title            = payload["title"]
+
+    md_history: list = cl.user_session.get("md_history", [])
+    md_history = [h for h in md_history if h["md_id"] != md_id]
+    md_history.insert(0, payload)
+    if len(md_history) > 10:
+        md_history = md_history[:10]
+    cl.user_session.set("md_history", md_history)
+
+    history_meta = [{"md_id": h["md_id"], "title": h["title"]} for h in md_history]
+
+    elem = cl.CustomElement(
+        name="MarkdownRenderer",
+        props={
+            "md_id":                    md_id,
+            "markdown_content":         markdown_content,
+            "markdown_content_partial": None,
+            "title":                    title,
+            "history":                  history_meta,
+            "history_data":             md_history,
+            "current_index":            0,
+        },
+        display="side",
+    )
+    await cl.ElementSidebar.set_title(f"文件 — {title}")
+    await cl.ElementSidebar.set_elements([elem])
 
 
 async def _inject_image_files(
@@ -504,6 +538,38 @@ async def run(message_history, initial_msg=None):
                                         "set_sidebar_elements",
                                         {"elements": [_streaming_elem.to_dict()], "key": f"pptx_stream_{_cur_arg_len}"},
                                     )
+
+                            # write_file .md 串流進度：每 150 字元節流推送一次 partial 給前端
+                            if tool_calls[tc_id]["name"] == "write_file":
+                                _cur_arg_len = len(tool_calls[tc_id]["arguments"])
+                                if _prev_arg_len // 150 < _cur_arg_len // 150:
+                                    _partial_args = tool_calls[tc_id]["arguments"]
+                                    _content_pos = _partial_args.find('"content"')
+                                    _md_pos = _partial_args.rfind(".md")
+                                    _is_md_write = (
+                                        "artifacts/" in _partial_args
+                                        and ".md" in _partial_args
+                                        and (_content_pos == -1 or _md_pos < _content_pos)
+                                    )
+                                    if _is_md_write:
+                                        _md_stream_elem = cl.CustomElement(
+                                            name="MarkdownRenderer",
+                                            props={
+                                                "md_id":                    f"md_streaming_{tc_id}",
+                                                "markdown_content":         None,
+                                                "markdown_content_partial": _partial_args,
+                                                "title":                    "文件 — 生成中…",
+                                                "history":                  [],
+                                                "history_data":             [],
+                                                "current_index":            0,
+                                            },
+                                            display="side",
+                                        )
+                                        await cl.context.emitter.emit("set_sidebar_title", "文件 — 生成中…")
+                                        await cl.context.emitter.emit(
+                                            "set_sidebar_elements",
+                                            {"elements": [_md_stream_elem.to_dict()], "key": f"md_stream_{_cur_arg_len}"},
+                                        )
         finally:
             _keepalive_task.cancel()
         # flush rewriter 剩餘 buffer（處理末尾無終止符的情況）
@@ -645,6 +711,13 @@ async def run(message_history, initial_msg=None):
                     pending = _pending_pptx_renders.pop(session_id, None)
                     if pending:
                         await _handle_render_pptx(pending)
+
+                # write_file .md 特殊後處理：取出 pending md render payload 並更新 sidebar
+                if tool_name == "write_file" and "[RENDER_MARKDOWN_OK]" in str(tool_result_content):
+                    session_id = cl.user_session.get("id")
+                    pending = _pending_md_renders.pop(session_id, None)
+                    if pending:
+                        await _handle_render_markdown(pending)
 
                 # 檢查是否有新的檔案產生（ask_user_form / read_file 不觸發下載流程）
                 _NO_FILE_SCAN_TOOLS = {"ask_user_form", "read_file", "render_html", "render_pptx"}
