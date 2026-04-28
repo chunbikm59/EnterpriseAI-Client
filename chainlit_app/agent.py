@@ -382,6 +382,46 @@ async def _run_compress(message_history: list, llm_client, base_model_setting: d
     return new_history
 
 
+class _ThinkingState:
+    def __init__(self):
+        self.active: bool = False
+        self.step: cl.Step | None = None
+        self.start: float = 0.0
+
+
+async def _handle_thinking_delta(
+    state: _ThinkingState, token: str | None, *, open_: bool = False, close_: bool = False
+) -> None:
+    if open_ and not state.active:
+        state.step = cl.Step(name="Thinking")
+        await state.step.__aenter__()
+        state.active = True
+        state.start = time.time()
+
+    if token and state.active and state.step:
+        await state.step.stream_token(token)
+
+    if close_ and state.active and state.step:
+        thought_for = round(time.time() - state.start)
+        state.step.name = f"Thought for {thought_for}s"
+        await state.step.update()
+        await state.step.__aexit__(None, None, None)
+        state.active = False
+        state.step = None
+
+
+def _fmt_api_error(prefix: str, exc: BaseException) -> str:
+    """將 openai APIError（含 body）格式化成可讀字串。"""
+    body = getattr(exc, "body", None)
+    status = getattr(exc, "status_code", None)
+    parts = [f"{prefix}：{type(exc).__name__}: {exc}"]
+    if status:
+        parts.append(f"HTTP {status}")
+    if body:
+        parts.append(f"body: {json.dumps(body, ensure_ascii=False) if isinstance(body, dict) else body}")
+    return "\n".join(parts)
+
+
 async def run(message_history, initial_msg=None):
     """
     處理 LLM 回答與遞迴工具呼叫，沒有工具呼叫時停止迴圈。
@@ -444,9 +484,17 @@ async def run(message_history, initial_msg=None):
     iteration = 0
     while iteration < MAX_ITERATIONS:
         iteration += 1
-        stream = await llm_client.chat.completions.create(
-            messages=message_history, **chat_params
-        )
+        try:
+            stream = await llm_client.chat.completions.create(
+                messages=message_history, **chat_params
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as _api_err:
+            err_text = _fmt_api_error("Provider 錯誤", _api_err)
+            logger.exception("LLM API call failed")
+            await cl.Message(content=err_text).send()
+            break
 
         response_text = ""
         tool_calls = []
@@ -455,9 +503,7 @@ async def run(message_history, initial_msg=None):
         conv_id = cl.user_session.get('conversation_id', '')
         rewriter = StreamingPathRewriter(user_id, conv_id) if conv_id else None
 
-        thinking = False
-        thinking_step = None
-        start = time.time()
+        ts = _ThinkingState()
 
         async def _ws_keepalive():
             """每 10 秒送一個空 token 到 WebSocket，防止 tool call arguments 累積期間 idle 斷線。"""
@@ -478,24 +524,25 @@ async def run(message_history, initial_msg=None):
                     continue
                 delta = chunk.choices[0].delta
 
+                # reasoning_content 路徑（llama.cpp 原生格式）
+                if rc := getattr(delta, "reasoning_content", None):
+                    await _handle_thinking_delta(ts, rc, open_=True)
+
                 if token := delta.content or "":
                     if token == "<think>":
-                        thinking = True
-                        thinking_step = cl.Step(name="Thinking")
-                        await thinking_step.__aenter__()
+                        await _handle_thinking_delta(ts, None, open_=True)
                         continue
 
                     if token == "</think>":
-                        thinking = False
-                        if thinking_step is not None:
-                            thought_for = round(time.time() - start)
-                            thinking_step.name = f"Thought for {thought_for}s"
-                            await thinking_step.update()
-                            await thinking_step.__aexit__(None, None, None)
+                        await _handle_thinking_delta(ts, None, close_=True)
                         continue
 
-                    if thinking and thinking_step is not None:
-                        await thinking_step.stream_token(token)
+                    # 收到正文 token 時，若 reasoning_content 路徑的 step 還開著則關閉
+                    if ts.active:
+                        await _handle_thinking_delta(ts, None, close_=True)
+
+                    if ts.active:
+                        await _handle_thinking_delta(ts, token)
                     else:
                         response_text += token
                         output = rewriter.feed(token) if rewriter else token
@@ -570,6 +617,15 @@ async def run(message_history, initial_msg=None):
                                             "set_sidebar_elements",
                                             {"elements": [_md_stream_elem.to_dict()], "key": f"md_stream_{_cur_arg_len}"},
                                         )
+        except asyncio.CancelledError:
+            _keepalive_task.cancel()
+            raise
+        except Exception as _stream_err:
+            _keepalive_task.cancel()
+            err_text = _fmt_api_error("Provider 串流錯誤", _stream_err)
+            logger.exception("LLM stream failed")
+            await cl.Message(content=err_text).send()
+            break
         finally:
             _keepalive_task.cancel()
         # flush rewriter 剩餘 buffer（處理末尾無終止符的情況）
@@ -588,14 +644,10 @@ async def run(message_history, initial_msg=None):
                 await msg_obj.update()
             response_text = re.sub(r'[\s\-\*#]+$', '', response_text)
 
-        # 如果有 assistant 回覆內容，加入歷史
-        if response_text.strip():
-            # rewriter 已在 stream 中即時轉換並輸出，直接取 full_output 作為持久化內容
-            # 若無 rewriter（沒有 conv_id），維持原始 response_text
+        # 如果有 assistant 回覆內容（純文字，無 tool_calls），加入歷史
+        if response_text.strip() and not tool_calls:
             if rewriter:
                 response_text = rewriter.full_output
-                if tool_calls:
-                    response_text = re.sub(r'[\s\-\*#]+$', '', response_text)
             message_history.append({"role": "assistant", "content": response_text})
             cl.user_session.set("message_history", message_history)
             await _persist_entry("assistant", response_text)
@@ -606,6 +658,7 @@ async def run(message_history, initial_msg=None):
             base_call_id = len(message_history)
 
             # 先將 assistant 的 tool_calls 訊息加入歷史
+            # 若同時有前導文字，合併進同一條訊息（避免連續兩條 assistant）
             tool_calls_formatted = []
             for i, tool_call in enumerate(tool_calls):
                 tool_call_id = f"call_{base_call_id}_{i}"
@@ -618,14 +671,18 @@ async def run(message_history, initial_msg=None):
                     },
                 })
 
-            # 先加入 assistant 訊息（包含所有 tool_calls）
+            if rewriter:
+                response_text = rewriter.full_output
+            response_text = re.sub(r'[\s\-\*#]+$', '', response_text)
+            merged_content = response_text.strip() or None
+
             message_history.append({
                 "role": "assistant",
-                "content": None,
+                "content": merged_content,
                 "tool_calls": tool_calls_formatted,
             })
             cl.user_session.set("message_history", message_history)
-            await _persist_entry("assistant", None, tool_calls_formatted)
+            await _persist_entry("assistant", merged_content, tool_calls_formatted)
 
             # 追蹤主 LLM 是否呼叫 write_file 寫記憶（供背景萃取互斥判斷）
             if any(tc["name"] == "write_file" for tc in tool_calls):
@@ -654,7 +711,7 @@ async def run(message_history, initial_msg=None):
                         tool_name, tool_call_id, tool_result_content, file_folder
                     )
 
-                    # 回傳含 __image_files__ 的工具，額外插入 assistant 訊息帶圖片
+                    # 回傳含 __image_files__ 的工具，解析圖片路徑，並將 tool_result_content 精簡為 summary
                     _IMAGE_TOOLS = {
                         "capture_video_frames": "時間點",
                         "capture_ppt_slides": "投影片",
@@ -665,6 +722,8 @@ async def run(message_history, initial_msg=None):
                             if isinstance(parsed, dict) and "__image_files__" in parsed:
                                 _image_files_to_inject = parsed["__image_files__"]
                                 _image_label_prefix = _IMAGE_TOOLS[tool_name]
+                                # 只保留 summary，避免絕對路徑進入 LLM 上下文
+                                tool_result_content = parsed.get("summary", tool_result_content)
                         except Exception:
                             pass
 
@@ -683,20 +742,53 @@ async def run(message_history, initial_msg=None):
                     tool_result_content = error_msg
 
                 # 確保每個 tool_call_id 只對應一個 tool 回應訊息
+                # 若有圖片，直接合併進 tool content list，避免插入額外 assistant 訊息破壞角色順序
                 if tool_result_content is not None:
-                    message_history.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "content": tool_result_content,
-                    })
-                    cl.user_session.set("message_history", message_history)
-                    await _persist_entry("tool", tool_result_content, tool_call_id=tool_call_id)
-
-                # 讀圖片路徑轉 base64，以 assistant 訊息插入上下文
-                if _image_files_to_inject:
-                    await _inject_image_files(
-                        _image_files_to_inject, message_history, _image_label_prefix
-                    )
+                    if _image_files_to_inject:
+                        tool_content_list: list = [{"type": "text", "text": tool_result_content}]
+                        _img_rel_paths: list[str] = []
+                        for _label, _abs_path in _image_files_to_inject.items():
+                            try:
+                                with open(_abs_path, "rb") as _f:
+                                    _raw = _f.read()
+                                _ext = os.path.splitext(_abs_path)[1].lower()
+                                _mime = "image/png" if _ext == ".png" else "image/jpeg"
+                                _raw = _resize_image_bytes(_raw, _mime)
+                                _b64 = base64.b64encode(_raw).decode("utf-8")
+                                tool_content_list.append({"type": "text", "text": f"{_image_label_prefix}: {_label}"})
+                                tool_content_list.append({
+                                    "type": "image_url",
+                                    "image_url": {"url": f"data:{_mime};base64,{_b64}"},
+                                })
+                                _img_rel_paths.append(_to_rel_path(_abs_path))
+                            except Exception as _img_e:
+                                tool_content_list.append({"type": "text", "text": f"{_image_label_prefix} {_label} 圖片讀取失敗：{_img_e}"})
+                        message_history.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "content": tool_content_list,
+                        })
+                        cl.user_session.set("message_history", message_history)
+                        await _persist_entry("tool", tool_result_content, tool_call_id=tool_call_id)
+                        # session history UI event（供重建對話時顯示圖片）
+                        if ENABLE_SESSION_HISTORY and _img_rel_paths:
+                            _sf = cl.user_session.get("session_file")
+                            if _sf:
+                                _event_files = [
+                                    {"permanent_path": p, "original_name": os.path.basename(p)}
+                                    for p in _img_rel_paths
+                                ]
+                                await asyncio.to_thread(
+                                    append_ui_event, _sf, "assistant_image", {"files": _event_files}
+                                )
+                    else:
+                        message_history.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "content": tool_result_content,
+                        })
+                        cl.user_session.set("message_history", message_history)
+                        await _persist_entry("tool", tool_result_content, tool_call_id=tool_call_id)
 
                 # render_html 特殊後處理：取出 pending render payload 並更新 sidebar
                 if tool_name == "render_html" and "[RENDER_HTML_OK]" in str(tool_result_content):

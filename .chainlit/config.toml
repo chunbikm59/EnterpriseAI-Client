@@ -1,3 +1,24 @@
+[features.mcp]
+    # Enable or disable MCP features globally
+    enabled = true
+
+[features.mcp.sse]
+    # Enable or disable the SSE connection type globally
+    enabled = true
+
+[features.mcp.streamable-http]
+    # Enable or disable the Streamable HTTP connection type globally
+    enabled = true
+
+[features.mcp.stdio]
+    # Enable or disable the stdio connection type globally
+    enabled = false
+    # Define an allowlist of executables for the stdio type.
+    # Only the base names of executables listed here can be used.
+    # This is a crucial security measure for stdio connections.
+    # Example: allows running `npx ...` and `uvx ...` but blocks others.
+    allowed_executables = [ "npx", "uvx" ]
+
 [project]
 # Whether to enable telemetry (default: false). No personal data is collected.
 enable_telemetry = false
@@ -59,7 +80,7 @@ edit_message = true
 # Name of the assistant.
 name = "Assistant"
 
-# default_theme = "dark"
+default_theme = "light"
 
 # layout = "wide"
 
