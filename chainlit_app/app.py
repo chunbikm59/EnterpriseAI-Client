@@ -41,13 +41,10 @@ from chainlit_app.session_state import _init_session_state
 # ── Action handlers（side effect: @cl.action_callback 登記）──
 import chainlit_app.action_handlers  # noqa: F401
 
-# ── Auth ──
-from foobar_provider import FooBarProvider
-from inject_custom_auth import add_custom_oauth_provider
+# ── Auth：OAuth provider 由 oauth_setup.py 根據環境變數自動載入 ──
+import chainlit_app.oauth_setup  # noqa: F401
 
 logger = logging.getLogger(__name__)
-
-add_custom_oauth_provider("foobar", FooBarProvider())
 
 @cl.on_chat_resume
 async def on_chat_resume(thread):
