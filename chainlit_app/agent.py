@@ -524,8 +524,9 @@ async def run(message_history, initial_msg=None):
                     continue
                 delta = chunk.choices[0].delta
 
-                # reasoning_content 路徑（llama.cpp 原生格式）
-                if rc := getattr(delta, "reasoning_content", None):
+                # reasoning_content 路徑（llama.cpp 原生 / LiteLLM proxy → reasoning_content；直接打 OpenRouter → model_extra["reasoning"]）
+                if rc := (getattr(delta, "reasoning_content", None) or
+                          (delta.model_extra.get("reasoning") if delta.model_extra else None)):
                     await _handle_thinking_delta(ts, rc, open_=True)
 
                 if token := delta.content or "":
@@ -551,6 +552,9 @@ async def run(message_history, initial_msg=None):
                             has_streamed_content = True
 
                 if delta.tool_calls:
+                    # 收到 tool call delta 時，若 thinking step 還開著則立即關閉，避免巢狀
+                    if ts.active:
+                        await _handle_thinking_delta(ts, None, close_=True)
                     for tool_call in delta.tool_calls:
                         tc_id = tool_call.index
                         if tc_id >= len(tool_calls):
@@ -584,6 +588,30 @@ async def run(message_history, initial_msg=None):
                                     await cl.context.emitter.emit(
                                         "set_sidebar_elements",
                                         {"elements": [_streaming_elem.to_dict()], "key": f"pptx_stream_{_cur_arg_len}"},
+                                    )
+
+                            # render_html 串流進度：每 200 字元節流推送一次 partial 給前端
+                            if tool_calls[tc_id]["name"] == "render_html":
+                                _cur_arg_len = len(tool_calls[tc_id]["arguments"])
+                                if _prev_arg_len // 200 < _cur_arg_len // 200:
+                                    _partial_args = tool_calls[tc_id]["arguments"]
+                                    _html_stream_elem = cl.CustomElement(
+                                        name="HtmlRenderer",
+                                        props={
+                                            "artifact_id":       f"html_streaming_{tc_id}",
+                                            "html_code":         None,
+                                            "html_code_partial": _partial_args,
+                                            "title":             "生成中…",
+                                            "history":           [],
+                                            "history_data":      [],
+                                            "current_index":     0,
+                                        },
+                                        display="side",
+                                    )
+                                    await cl.context.emitter.emit("set_sidebar_title", "Artifacts — 生成中…")
+                                    await cl.context.emitter.emit(
+                                        "set_sidebar_elements",
+                                        {"elements": [_html_stream_elem.to_dict()], "key": f"html_stream_{_cur_arg_len}"},
                                     )
 
                             # write_file .md 串流進度：每 150 字元節流推送一次 partial 給前端
@@ -628,6 +656,9 @@ async def run(message_history, initial_msg=None):
             break
         finally:
             _keepalive_task.cancel()
+        # 確保 thinking step 不殘留（串流結束時若還 active 則強制關閉）
+        if ts.active:
+            await _handle_thinking_delta(ts, None, close_=True)
         # flush rewriter 剩餘 buffer（處理末尾無終止符的情況）
         if rewriter:
             remaining = rewriter.flush()

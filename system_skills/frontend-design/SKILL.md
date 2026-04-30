@@ -31,6 +31,7 @@ metadata:
 | 複雜資料視覺化 | `https://cdn.jsdelivr.net/npm/d3@7` |
 | 流程圖/思維導圖 | `https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js` |
 | UI 樣式框架 | `https://cdn.jsdelivr.net/npm/tailwindcss` |
+| UI Icon（通用） | `https://cdn.jsdelivr.net/npm/lucide@latest` |
 | 輕量互動 | `https://cdn.jsdelivr.net/npm/alpinejs@3` |
 | 互動式表格 | `https://cdn.jsdelivr.net/npm/tabulator-tables` |
 | 時間軸 | `https://cdn.jsdelivr.net/npm/vis-timeline` |
@@ -50,6 +51,7 @@ metadata:
 - Inter、Roboto、Arial、system-ui 等通用字體（除非設計主題需要）
 - 白底紫色漸層的「AI 美學」
 - 千篇一律的卡片式 + 圓角 + 陰影佈局
+- **任何 emoji**（包含裝飾用途與 icon 替代，一律改用 Lucide icon）
 
 **字體選擇**：從 Google Fonts 引入具個性的字體，配對顯示字體（標題）與內文字體。
 

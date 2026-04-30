@@ -4,6 +4,27 @@ export default function HtmlRenderer() {
   const initialHtml  = props.html_code    || "";
   const initialTitle = props.title        || "Artifact";
 
+  // 串流狀態：html_code === null 且有 partial
+  const partial     = props.html_code_partial || null;
+  const isStreaming = props.html_code === null && !!partial;
+
+  // 從 JSON 前綴解析出已接收的部分 HTML
+  function extractPartialHtml(raw) {
+    if (!raw) return "";
+    const match = raw.match(/"html_code"\s*:\s*"([\s\S]*)/);
+    if (!match) return "";
+    let s = match[1];
+    s = s.replace(/\\\\/g, "\x00BS\x00")
+         .replace(/\\n/g, "\n")
+         .replace(/\\t/g, "\t")
+         .replace(/\\r/g, "\r")
+         .replace(/\\"/g, '"')
+         .replace(/\x00BS\x00/g, "\\");
+    return s;
+  }
+
+  const streamHtml = isStreaming ? extractPartialHtml(partial) : "";
+
   // 初始 index 由 props.current_index 決定（element remount 時保留目前選取版本）
   const initialIndex = typeof props.current_index === "number" ? props.current_index : 0;
   const [currentIndex, setCurrentIndex]       = React.useState(initialIndex);
@@ -102,6 +123,15 @@ export default function HtmlRenderer() {
     });
   }
 
+  // 注入串流動畫 CSS（只注入一次）
+  React.useEffect(() => {
+    if (document.getElementById("html-renderer-style")) return;
+    const s = document.createElement("style");
+    s.id = "html-renderer-style";
+    s.textContent = `@keyframes html-pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }`;
+    document.head.appendChild(s);
+  }, []);
+
   // ── 樣式常數 ──
   const btnStyle = {
     padding: "3px 10px",
@@ -130,6 +160,7 @@ export default function HtmlRenderer() {
         height:        "100%",
         minHeight:     "520px",
         overflow:      "hidden",
+        position:      "relative",
       },
     },
 
@@ -227,21 +258,79 @@ export default function HtmlRenderer() {
       )
     ),
 
-    // ── iframe 渲染區 ──
-    React.createElement("iframe", {
-      key:           currentItem.artifact_id + "_" + currentIndex,
-      srcDoc:        currentItem.html_code,
-      sandbox:       iframeSandbox,
-      title:         currentItem.title,
-      referrerPolicy:"no-referrer",
-      style: {
-        width:      "100%",
-        flex:       1,
-        border:     "none",
-        background: "#fff",
-        display:    "block",
-        minHeight:  "460px",
-      },
-    })
+    // ── 串流狀態：顯示原始碼預覽（不用 iframe，避免重建閃爍）──
+    isStreaming
+      ? React.createElement(
+          "div",
+          {
+            style: {
+              flex:       1,
+              display:    "flex",
+              flexDirection: "column",
+              overflow:   "hidden",
+              background: "var(--muted, #f9fafb)",
+            },
+          },
+          // 狀態列
+          React.createElement(
+            "div",
+            {
+              style: {
+                padding:      "4px 12px",
+                fontSize:     "11px",
+                color:        "var(--primary, #6366f1)",
+                background:   "rgba(99,102,241,0.06)",
+                borderBottom: "1px solid rgba(99,102,241,0.15)",
+                display:      "flex",
+                alignItems:   "center",
+                gap:          "6px",
+                flexShrink:   0,
+              },
+            },
+            React.createElement(
+              "span",
+              { style: { animation: "html-pulse 0.9s ease-in-out infinite", display: "inline-block" } },
+              "●"
+            ),
+            `HTML 生成中… 已接收 ${partial ? partial.length : 0} 字元`
+          ),
+          // 原始碼預覽
+          React.createElement(
+            "pre",
+            {
+              style: {
+                flex:       1,
+                margin:     0,
+                padding:    "12px 14px",
+                fontSize:   "11px",
+                lineHeight: "1.55",
+                fontFamily: "monospace",
+                color:      "var(--foreground, #111)",
+                overflow:   "auto",
+                whiteSpace: "pre-wrap",
+                wordBreak:  "break-all",
+              },
+            },
+            streamHtml,
+            React.createElement("span", { style: { animation: "html-pulse 0.9s ease-in-out infinite", display: "inline-block" } }, "▌")
+          )
+        )
+
+      // ── 完整版：iframe 渲染區 ──
+      : React.createElement("iframe", {
+          key:           currentItem.artifact_id + "_" + currentIndex,
+          srcDoc:        currentItem.html_code,
+          sandbox:       iframeSandbox,
+          title:         currentItem.title,
+          referrerPolicy:"no-referrer",
+          style: {
+            width:      "100%",
+            flex:       1,
+            border:     "none",
+            background: "#fff",
+            display:    "block",
+            minHeight:  "460px",
+          },
+        })
   );
 }
