@@ -846,8 +846,8 @@ async def run(message_history, initial_msg=None):
                     if pending:
                         await _handle_render_markdown(pending)
 
-                # 檢查是否有新的檔案產生（ask_user_form / read_file 不觸發下載流程）
-                _NO_FILE_SCAN_TOOLS = {"ask_user_form", "read_file", "render_html", "render_pptx"}
+                # 檢查是否有新的檔案產生（AskUserQuestion / read_file 不觸發下載流程）
+                _NO_FILE_SCAN_TOOLS = {"AskUserQuestion", "read_file", "render_html", "render_pptx"}
                 if tool_name not in _NO_FILE_SCAN_TOOLS:
                     await check_and_process_new_files(existing_files)
                     existing_files = await get_files_state(os.path.join(file_folder, "artifacts"))

@@ -21,7 +21,6 @@ async def on_mcp_connect(name, tools=[]):
             break
 
     cl.user_session.set('chat_setting', chat_setting)
-    settings = await cl.ChatSettings(chat_setting).send()
 
 
 async def on_disconnect(name):

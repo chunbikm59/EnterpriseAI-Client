@@ -16,6 +16,10 @@ from utils.user_profile import ensure_profile_exists, get_conversation_artifacts
 from chainlit_app.mcp_callbacks import on_mcp_connect, on_disconnect, on_mcp_elicit, on_mcp_progress
 from chainlit_app.agent import ENABLE_SESSION_HISTORY
 
+ASK_USER_FORM_INSTRUCTIONS = (
+    "\n\nIf you do not understand why the user has denied a tool call, use the AskUserQuestion to ask them."
+)
+
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -67,6 +71,7 @@ async def _init_session_state(userinfo):
         f"\n\n現在時間是 {datetime.datetime.now()}，以下為使用者登入資訊:{userinfo.to_json()}"
         + skills_section
         + memory_section
+        + ASK_USER_FORM_INSTRUCTIONS
         + MEMORY_MANAGEMENT_INSTRUCTIONS
     )
     cl.user_session.set("message_history", [{"role": "system", "content": system_content}])

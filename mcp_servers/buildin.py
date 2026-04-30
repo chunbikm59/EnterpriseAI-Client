@@ -1350,7 +1350,7 @@ async def capture_ppt_slides(
 
 
 @mcp.tool()
-async def ask_user_form(
+async def AskUserQuestion(
     form_schema: str = Field(
         description=(
             "問卷表單的 JSON 字串。格式範例：\n"
@@ -1377,11 +1377,17 @@ async def ask_user_form(
     )
 ) -> str:
     """
-    [優先使用] 當需要向使用者蒐集 2 個以上的資訊、或任何問題有固定選項（類別、偏好、日期等）時，
-    必須呼叫此工具顯示互動表單，不得改用純文字逐一提問。
-    在 Chainlit 介面顯示動態互動表單，等待使用者填寫後回傳答案。
-    支援單選（single_choice）、多選（multi_choice）、日期（date）三種題型。
-    使用者可提交答案或取消。回傳 JSON 字串。
+    Use this tool when you need to ask the user questions during execution. This allows you to:
+    1. Gather user preferences or requirements
+    2. Clarify ambiguous instructions
+    3. Get decisions on implementation choices as you work
+    4. Offer choices to the user about what direction to take.
+
+    Usage notes:
+    - Users will always be able to select "Other" to provide custom text input
+    - Use multi_choice type to allow multiple answers to be selected for a question
+    - If you recommend a specific option, make that the first option in the list and add "(Recommended)" at the end of the label
+    - 在 Chainlit 介面顯示動態互動表單，等待使用者填寫後回傳 JSON 字串
     """
     import chainlit as cl
 
@@ -1596,7 +1602,7 @@ _FUNC_MAP: dict = {
     "activate_skill": activate_skill,
     "write_file": write_file,
     "delete_file": delete_file,
-    "ask_user_form": ask_user_form,
+    "AskUserQuestion": AskUserQuestion,
     "capture_video_frames": capture_video_frames,
     "capture_ppt_slides": capture_ppt_slides,
     "render_html": render_html,
