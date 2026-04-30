@@ -500,6 +500,7 @@ async def run(message_history, initial_msg=None):
         tool_calls = []
         has_streamed_content = False
         usage_prompt_tokens: int | None = None
+        usage_completion_tokens: int | None = None
         conv_id = cl.user_session.get('conversation_id', '')
         rewriter = StreamingPathRewriter(user_id, conv_id) if conv_id else None
 
@@ -518,8 +519,11 @@ async def run(message_history, initial_msg=None):
         try:
             async for chunk in stream:
                 # 捕獲最終用量 chunk（stream_options.include_usage=True 會在串流末尾附帶）
-                if hasattr(chunk, "usage") and chunk.usage and hasattr(chunk.usage, "prompt_tokens"):
-                    usage_prompt_tokens = chunk.usage.prompt_tokens
+                if hasattr(chunk, "usage") and chunk.usage:
+                    if hasattr(chunk.usage, "prompt_tokens"):
+                        usage_prompt_tokens = chunk.usage.prompt_tokens
+                    if hasattr(chunk.usage, "completion_tokens"):
+                        usage_completion_tokens = chunk.usage.completion_tokens
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
@@ -865,6 +869,14 @@ async def run(message_history, initial_msg=None):
                 cl.user_session.set("message_history", message_history)
                 await _persist_entry("system", f"[AUTO-COMPACT] prompt_tokens={usage_prompt_tokens}")
 
+            # 累積本迭代 token（工具呼叫輪）
+            if usage_prompt_tokens:
+                cl.user_session.set("accumulated_prompt_tokens",
+                    cl.user_session.get("accumulated_prompt_tokens", 0) + usage_prompt_tokens)
+            if usage_completion_tokens:
+                cl.user_session.set("accumulated_completion_tokens",
+                    cl.user_session.get("accumulated_completion_tokens", 0) + usage_completion_tokens)
+
             # 有 tool call，繼續 while loop（再丟給 LLM）
             # 並用新的 cl.Message 物件做 streaming
             msg_obj = cl.Message(content="")
@@ -895,6 +907,14 @@ async def run(message_history, initial_msg=None):
                 display="inline",
             )]
             await msg_obj.update()
+
+        # 累積本迭代 token（最終回應輪）
+        if usage_prompt_tokens:
+            cl.user_session.set("accumulated_prompt_tokens",
+                cl.user_session.get("accumulated_prompt_tokens", 0) + usage_prompt_tokens)
+        if usage_completion_tokens:
+            cl.user_session.set("accumulated_completion_tokens",
+                cl.user_session.get("accumulated_completion_tokens", 0) + usage_completion_tokens)
         break
 
     # 如果達到最大迴圈次數限制

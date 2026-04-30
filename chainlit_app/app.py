@@ -101,6 +101,9 @@ def oauth_callback(
   raw_user_data: Dict[str, str],
   default_user: cl.User,
 ) -> Optional[cl.User]:
+  name = raw_user_data.get("name")
+  if name:
+    default_user.display_name = 'tester'
   return default_user
 
 
@@ -136,9 +139,12 @@ async def end():
             _conv_id = cl.user_session.get('conversation_id', '')
             await asyncio.to_thread(finalize_conversation_file, session_file, _conv_id, len(message_history))
             if _conv_id:
+                _total_prompt = cl.user_session.get("accumulated_prompt_tokens", 0)
+                _total_completion = cl.user_session.get("accumulated_completion_tokens", 0)
                 await asyncio.to_thread(
                     conversation_manager.finalize_conversation,
-                    _conv_id, len(message_history)
+                    _conv_id, len(message_history),
+                    _total_prompt, _total_completion
                 )
 
     # 清除 Chainlit 暫存上傳目錄

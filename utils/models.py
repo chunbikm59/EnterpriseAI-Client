@@ -33,6 +33,8 @@ class Conversation(Base):
         DateTime(timezone=True), nullable=True
     )
     message_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_completion_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     __table_args__ = (
         Index("ix_conversations_user_updated", "user_id", "updated_at"),

@@ -30,8 +30,10 @@ def create_conversation(user_id: str, conversation_id: str) -> None:
             session.rollback()
 
 
-def finalize_conversation(conversation_id: str, message_count: int) -> None:
-    """標記對話結束，更新 ended_at 與 message_count。"""
+def finalize_conversation(conversation_id: str, message_count: int,
+                          total_prompt_tokens: int = 0,
+                          total_completion_tokens: int = 0) -> None:
+    """標記對話結束，更新 ended_at、message_count 與累計 token 數。"""
     conv_uuid = uuid.UUID(conversation_id)
     with SessionLocal() as session:
         conv = session.get(Conversation, conv_uuid)
@@ -39,6 +41,8 @@ def finalize_conversation(conversation_id: str, message_count: int) -> None:
             conv.ended_at = datetime.now(timezone.utc)
             conv.updated_at = datetime.now(timezone.utc)
             conv.message_count = message_count
+            conv.total_prompt_tokens = total_prompt_tokens
+            conv.total_completion_tokens = total_completion_tokens
             session.commit()
 
 
