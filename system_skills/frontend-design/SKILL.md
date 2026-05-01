@@ -28,13 +28,7 @@ metadata:
 | 需求 | CDN 引入 |
 |------|---------|
 | 折線/柱狀/圓餅圖 | `https://cdn.jsdelivr.net/npm/chart.js` |
-| 複雜資料視覺化 | `https://cdn.jsdelivr.net/npm/d3@7` |
-| 流程圖/思維導圖 | `https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js` |
-| UI 樣式框架 | `https://cdn.jsdelivr.net/npm/tailwindcss` |
-| UI Icon（通用） | `https://cdn.jsdelivr.net/npm/lucide@latest` |
-| 輕量互動 | `https://cdn.jsdelivr.net/npm/alpinejs@3` |
-| 互動式表格 | `https://cdn.jsdelivr.net/npm/tabulator-tables` |
-| 時間軸 | `https://cdn.jsdelivr.net/npm/vis-timeline` |
+| UI Icon（通用） | `https://unpkg.com/lucide@latest/dist/umd/lucide.min.js` |
 
 ## 設計美學準則
 
