@@ -1,6 +1,6 @@
 [features.mcp]
     # Enable or disable MCP features globally
-    enabled = true
+    enabled = false
 
 [features.mcp.sse]
     # Enable or disable the SSE connection type globally
@@ -22,6 +22,9 @@
 [project]
 # Whether to enable telemetry (default: false). No personal data is collected.
 enable_telemetry = false
+
+# Force WebSocket transport, skip HTTP polling negotiation rounds
+transports = ["websocket"]
 
 
 # List of environment variables to be provided by each user to use the app.
@@ -101,7 +104,7 @@ custom_css = "/public/custom.css"
 
 # Specify a JavaScript file that can be used to customize the user interface.
 # The JavaScript file can be served from the public directory.
-custom_js = ""
+custom_js = "/public/custom-memory.js"
 
 # The style of alert boxes. Can be "classic" or "modern".
 alert_style = "classic"

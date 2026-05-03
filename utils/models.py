@@ -52,3 +52,4 @@ class PublishedArtifact(Base):
     user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
     html_file: Mapped[str] = mapped_column(String(64), nullable=False)
+    conversation_folder: Mapped[str | None] = mapped_column(String(512), nullable=True)

@@ -14,7 +14,7 @@ async def consume_memory_prefetch(
     memory_injected_this_turn: bool,
     memory_surfaced_paths: set,
     message_history: list,
-) -> tuple[bool, set, list]:
+) -> tuple[bool, set, list, list[str]]:
     """消費記憶預取結果，若尚未注入且預取已完成，則注入相關記憶。
 
     Args:
@@ -24,18 +24,20 @@ async def consume_memory_prefetch(
         message_history: 當前對話歷史（會在原地 append）
 
     Returns:
-        (injected, updated_surfaced_paths, message_history)
+        (injected, updated_surfaced_paths, message_history, newly_injected_files)
         - injected: 是否在本次呼叫中完成注入
         - updated_surfaced_paths: 更新後的已出現路徑集合
         - message_history: 可能已 append 記憶注入訊息的對話歷史
+        - newly_injected_files: 本次新注入的記憶檔案名稱清單
     """
     if (
         memory_injected_this_turn
         or memory_prefetch_task is None
         or not memory_prefetch_task.done()
     ):
-        return memory_injected_this_turn, memory_surfaced_paths, message_history
+        return memory_injected_this_turn, memory_surfaced_paths, message_history, []
 
+    newly_injected_files: list[str] = []
     try:
         relevant_memories = memory_prefetch_task.result()
         if relevant_memories:
@@ -44,6 +46,7 @@ async def consume_memory_prefetch(
             memory_injected_this_turn = True
             for m in relevant_memories:
                 memory_surfaced_paths.add(m["filename"])
+                newly_injected_files.append(m["filename"])
             logger.debug(
                 "[memory_prefetch] 注入 %d 個相關記憶：%s\n%s",
                 len(relevant_memories),
@@ -55,4 +58,4 @@ async def consume_memory_prefetch(
     except Exception:
         logger.debug("[memory_prefetch] 預取結果讀取失敗，靜默降級", exc_info=True)
 
-    return memory_injected_this_turn, memory_surfaced_paths, message_history
+    return memory_injected_this_turn, memory_surfaced_paths, message_history, newly_injected_files

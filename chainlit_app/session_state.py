@@ -42,9 +42,12 @@ async def _init_session_state(userinfo):
     )
     cl.user_session.set('file_folder', conversation_folder)
 
-    # AgentSkills
-    await asyncio.to_thread(ensure_profile_exists, user_id)
-    skills = await asyncio.to_thread(discover_skills, user_id)
+    # AgentSkills + Memory：三個獨立 I/O 並行
+    _, skills, memory_index = await asyncio.gather(
+        asyncio.to_thread(ensure_profile_exists, user_id),
+        asyncio.to_thread(discover_skills, user_id),
+        asyncio.to_thread(load_memory_index, user_id),
+    )
     cl.user_session.set('skills', skills)
 
     skills_section = ""
@@ -55,8 +58,6 @@ async def _init_session_state(userinfo):
             "\n\n當使用者的任務符合某個技能的描述時，請呼叫 activate_skill 工具並傳入技能名稱，以載入完整的技能指引。"
         )
 
-    # Memory 層
-    memory_index = await asyncio.to_thread(load_memory_index, user_id)
     memory_section = ""
     if memory_index:
         memory_section = (
@@ -123,6 +124,8 @@ async def _init_session_state(userinfo):
             continue
         setting_key = f"mcp_{server_name}"
         if settings.get(setting_key, config.get('enabled', False)):
-            await mcp_manager.add_connection(server_name, config, headers={"X-Session-Id": session_id, "X-User-Id": user_id})
+            asyncio.ensure_future(
+                mcp_manager.add_connection(server_name, config, headers={"X-Session-Id": session_id, "X-User-Id": user_id})
+            )
 
     await cl.context.emitter.set_commands([])

@@ -180,6 +180,8 @@
         },
         "user": {
             "menu": {
+                "memory": "記憶管理",
+                "memoryKey": "M",
                 "settings": "設定",
                 "settingsKey": "S",
                 "apiKeys": "API金鑰",

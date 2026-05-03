@@ -23,7 +23,7 @@ from utils.conversation_storage import (
     append_ui_event,
     append_message_edit,
     load_conversation_full,
-    load_artifact_history,
+    load_resume_data,
     read_title,
     _uuid_exists_in_jsonl,
 )
@@ -66,13 +66,16 @@ async def on_chat_resume(thread):
     if not os.path.exists(file_path):
         return
 
-    restored_history = await asyncio.to_thread(load_conversation_full, file_path)
+    conversation_folder = os.path.join(_PROJECT_ROOT, 'user_profiles', user_id, 'conversations', conv_id)
+
+    (restored_history, session_title, artifact_history), _, _ = await asyncio.gather(
+        asyncio.to_thread(load_resume_data, file_path, conversation_folder),
+        asyncio.to_thread(os.makedirs, os.path.join(conversation_folder, 'uploads'), exist_ok=True),
+        asyncio.to_thread(os.makedirs, get_conversation_artifacts_dir(conversation_folder), exist_ok=True),
+    )
+
     if not restored_history:
         return
-
-    conversation_folder = os.path.join(_PROJECT_ROOT, 'user_profiles', user_id, 'conversations', conv_id)
-    await asyncio.to_thread(os.makedirs, os.path.join(conversation_folder, 'uploads'), exist_ok=True)
-    await asyncio.to_thread(os.makedirs, get_conversation_artifacts_dir(conversation_folder), exist_ok=True)
 
     cl.user_session.set('conversation_id', conv_id)
     cl.user_session.set('file_folder', conversation_folder)
@@ -82,11 +85,8 @@ async def on_chat_resume(thread):
     # msg_id_to_jsonl_uuid 無法從 JSONL 重建（Chainlit step id 未持久化），保持空 dict
     cl.user_session.set("msg_id_to_jsonl_uuid", {})
 
-    session_title = await asyncio.to_thread(read_title, file_path)
     title_str = f"「{session_title}」" if session_title else ""
 
-    # 還原 artifact_history，讓 reopen_artifact callback 可正確取得完整歷史
-    artifact_history = await asyncio.to_thread(load_artifact_history, file_path, conversation_folder)
     if artifact_history:
         cl.user_session.set("artifact_history", artifact_history)
 
@@ -247,25 +247,29 @@ async def on_message(message: cl.Message):
         if not _session_file:
             _pending_conv = cl.user_session.get('conversation_id_pending', _conv_id)
             _pending_uid = cl.user_session.get('user_id_pending', _eid)
-            _session_file, is_new_session = await asyncio.to_thread(init_conversation_file, _pending_uid, _pending_conv)
+            # 並行：建立 JSONL 檔 + 兩個資料夾（互不依賴）
+            ((_session_file, is_new_session), _, _) = await asyncio.gather(
+                asyncio.to_thread(init_conversation_file, _pending_uid, _pending_conv),
+                asyncio.to_thread(os.makedirs, os.path.join(_conversation_folder, 'uploads'), exist_ok=True),
+                asyncio.to_thread(os.makedirs, get_conversation_artifacts_dir(_conversation_folder), exist_ok=True),
+            )
             cl.user_session.set('session_file', _session_file)
-            # 第一條訊息才建立 conversation_folder，避免空對話留下空資料夾
-            await asyncio.to_thread(os.makedirs, os.path.join(_conversation_folder, 'uploads'), exist_ok=True)
-            await asyncio.to_thread(os.makedirs, get_conversation_artifacts_dir(_conversation_folder), exist_ok=True)
             if is_new_session:
-                # 寫入 system message
+                # 並行：寫入 system message（FS）+ 建立 DB 對話記錄（DB）
                 initial_history = cl.user_session.get("message_history", [])
-                for entry in initial_history:
-                    if entry["role"] == "system":
-                        await asyncio.to_thread(
-                            append_entry,
-                            _session_file, _pending_conv, _pending_uid,
-                            entry["role"], entry.get("content"),
-                        )
-                # DB 建立對話記錄
-                await asyncio.to_thread(
+                system_entries = [e for e in initial_history if e["role"] == "system"]
+                db_task = asyncio.to_thread(
                     conversation_manager.create_conversation, _pending_uid, _pending_conv
                 )
+                fs_tasks = [
+                    asyncio.to_thread(
+                        append_entry,
+                        _session_file, _pending_conv, _pending_uid,
+                        e["role"], e.get("content"),
+                    )
+                    for e in system_entries
+                ]
+                await asyncio.gather(db_task, *fs_tasks)
         if _session_file:
             _jsonl_uuid = await asyncio.to_thread(
                 append_entry, _session_file, _conv_id, _eid,

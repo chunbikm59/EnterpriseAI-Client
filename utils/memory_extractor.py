@@ -173,8 +173,8 @@ async def extract_memories_background(
     cursor: int,
     turns_since_extraction: int,
     all_tools: list | None = None,
-) -> tuple[int, int]:
-    """背景記憶萃取 — fire-and-forget，回傳更新後的 (cursor, turns_since_extraction)。
+) -> tuple[int, int, list[str]]:
+    """背景記憶萃取 — fire-and-forget，回傳更新後的 (cursor, turns_since_extraction, written_files)。
 
     Args:
         user_id: 使用者 ID
@@ -187,7 +187,8 @@ async def extract_memories_background(
         all_tools: 主對話完整 tools 清單（OpenAI 格式），用於保持 KV cache 前綴一致
 
     Returns:
-        (new_cursor, new_turns_since_extraction)
+        (new_cursor, new_turns_since_extraction, written_files)
+        - written_files: 本次萃取成功寫入的記憶檔案名稱清單
     """
     total_messages = len(recent_messages)
 
@@ -197,7 +198,7 @@ async def extract_memories_background(
             "[memory_extractor] 主 LLM 本回合已寫記憶，跳過背景萃取，推進游標 %d→%d | user=%s",
             cursor, total_messages, user_id,
         )
-        return total_messages, 0
+        return total_messages, 0, []
 
     # 節流：未達回合門檻，遞增計數後跳過
     new_turns = turns_since_extraction + 1
@@ -206,7 +207,7 @@ async def extract_memories_background(
             "[memory_extractor] 節流跳過（%d/%d 回合）| user=%s",
             new_turns, TURNS_BETWEEN_EXTRACTIONS, user_id,
         )
-        return cursor, new_turns
+        return cursor, new_turns, []
 
     # 游標：確認游標後有新的 user/assistant 訊息才啟動
     new_visible = [
@@ -215,16 +216,17 @@ async def extract_memories_background(
     ]
     if not new_visible:
         logger.debug("[memory_extractor] 游標後無新訊息，跳過 | user=%s", user_id)
-        return total_messages, 0
+        return total_messages, 0, []
 
     logger.debug(
         "[memory_extractor] 背景萃取啟動 | user=%s session=%s 新訊息數=%d（游標 %d→%d）",
         user_id, session_id, len(new_visible), cursor, total_messages,
     )
+    written_files: list[str] = []
     try:
         # 傳入完整 message_history（含 system message）作為 fork 前綴
         # new_message_count 只計游標後的新訊息數，讓 agent 知道要分析的範圍
-        await _run_extractor(
+        written_files = await _run_extractor(
             user_id, recent_messages, session_id, conversation_folder,
             new_message_count=len(new_visible),
             all_tools=all_tools or [],
@@ -232,7 +234,7 @@ async def extract_memories_background(
     except Exception:
         logger.debug("[memory_extractor] 萃取發生例外，靜默處理", exc_info=True)
 
-    return total_messages, 0
+    return total_messages, 0, written_files
 
 
 async def _run_extractor(
@@ -242,8 +244,8 @@ async def _run_extractor(
     conversation_folder: str,
     new_message_count: int,
     all_tools: list,
-) -> None:
-    """執行記憶萃取。
+) -> list[str]:
+    """執行記憶萃取，回傳成功寫入的記憶檔案名稱清單。
 
     以完整 message_history + 完整 tools 作為 fork 前綴，與主對話 token 序列相同，
     最大化 KV cache 命中率。工具限制改為事後攔截：ALLOWED_TOOLS 以外的 tool_call
@@ -275,6 +277,8 @@ async def _run_extractor(
         "[memory_extractor] 開始工具迴圈 fork_messages=%d new_message_count=%d | user=%s",
         len(fork_messages), new_message_count, user_id,
     )
+
+    written_files: list[str] = []
 
     # 執行工具迴圈（最多 MAX_TURNS 次）
     for _turn in range(MAX_TURNS):
@@ -324,6 +328,10 @@ async def _run_extractor(
                         tool_name, tool_args, session_id, user_id, conversation_folder
                     )
                     logger.debug("[memory_extractor] 工具 %s 結果：%s", tool_name, result_content)
+                    if tool_name == "write_file":
+                        path = tool_args.get("path", "")
+                        if path.startswith("memory/") and not path.endswith("MEMORY.md"):
+                            written_files.append(path.removeprefix("memory/"))
                 except Exception as e:
                     logger.debug("[memory_extractor] 工具 %s 執行例外：%s", tool_name, e, exc_info=True)
                     result_content = f"工具執行錯誤：{e}"
@@ -335,3 +343,5 @@ async def _run_extractor(
             })
 
         fork_messages.extend(tool_results)
+
+    return written_files

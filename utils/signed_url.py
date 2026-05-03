@@ -156,3 +156,111 @@ class StreamingPathRewriter:
     def full_output(self) -> str:
         """目前為止所有已輸出的轉換後內容，用於持久化至對話歷史。"""
         return self._full_output
+
+
+# ── HTML 圖片路徑工具 ────────────────────────────────────────────────────────
+
+
+def rewrite_html_img_paths(html: str, user_id: str, conv_id: str) -> str:
+    """預覽用：將 HTML 中 uploads/ / artifacts/ 相對路徑替換為 /api/user-files/ URL。
+
+    處理 src / href / data-src 屬性及 CSS url() 語法。
+    支援 ../uploads/ 前綴（HTML 放在 artifacts/ 子目錄時的合法相對路徑）。
+    已是絕對路徑、http(s)://、data:、# 的路徑不處理。
+    """
+    safe_uid = "".join(c if c.isalnum() or c in "-_" else "_" for c in user_id)
+    base = f"/api/user-files/user_profiles/{safe_uid}/conversations/{conv_id}"
+
+    def _normalize(path: str) -> str:
+        """將 ../uploads/foo 正規化為 uploads/foo。"""
+        return path.lstrip("./").lstrip("/") if path.startswith("../") else path
+
+    def _replace_attr(m: re.Match) -> str:
+        attr, quote, path = m.group(1), m.group(2), m.group(3)
+        if path.startswith(("/", "http://", "https://", "data:", "#")):
+            return m.group(0)
+        return f'{attr}={quote}{base}/{_normalize(path)}{quote}'
+
+    def _replace_url(m: re.Match) -> str:
+        quote, path = m.group(1), m.group(2)
+        if path.startswith(("/", "http://", "https://", "data:", "#")):
+            return m.group(0)
+        return f'url({quote}{base}/{_normalize(path)}{quote})'
+
+    html = re.sub(
+        r'(src|href|data-src)=(["\'])((?:\.\.\/)?(?:uploads|artifacts)/[^"\'> \t\n]+)\2',
+        _replace_attr,
+        html,
+        flags=re.IGNORECASE,
+    )
+    html = re.sub(
+        r'url\((["\']?)((?:\.\.\/)?(?:uploads|artifacts)/[^"\')\s]+)\1\)',
+        _replace_url,
+        html,
+        flags=re.IGNORECASE,
+    )
+
+    def _replace_js_path(m: re.Match) -> str:
+        quote, path = m.group(1), m.group(2)
+        normalized = path[3:] if path.startswith("../") else path
+        return f'{quote}{base}/{normalized}'
+
+    html = re.sub(
+        r'(["\'\`])((?:\.\.\/)?(?:uploads|artifacts)/)',
+        _replace_js_path,
+        html,
+        flags=re.IGNORECASE,
+    )
+    return html
+
+
+def rewrite_html_paths_for_publish(
+    html: str,
+    public_token: str,
+    base_url: str,
+) -> str:
+    """發布用：將 HTML 中 uploads/ / artifacts/ 相對路徑改寫為公開 URL。
+
+    支援 src/href/data-src 屬性及 CSS url() 語法。
+    支援 ../uploads/ 前綴（HTML 放在 artifacts/ 子目錄時的合法相對路徑）。
+    已是絕對路徑、http(s)://、data:、# 的路徑不處理。
+    """
+    def _replace_attr(m: re.Match) -> str:
+        attr, quote, path = m.group(1), m.group(2), m.group(3)
+        if path.startswith(("/", "http://", "https://", "data:", "#")):
+            return m.group(0)
+        normalized = path[3:] if path.startswith("../") else path
+        return f'{attr}={quote}{base_url}/p/{public_token}/files/{normalized}{quote}'
+
+    def _replace_url(m: re.Match) -> str:
+        quote, path = m.group(1), m.group(2)
+        if path.startswith(("/", "http://", "https://", "data:", "#")):
+            return m.group(0)
+        normalized = path[3:] if path.startswith("../") else path
+        return f'url({quote}{base_url}/p/{public_token}/files/{normalized}{quote})'
+
+    html = re.sub(
+        r'(src|href|data-src)=(["\'])((?:\.\.\/)?(?:uploads|artifacts)/[^"\'> \t\n]+)\2',
+        _replace_attr,
+        html,
+        flags=re.IGNORECASE,
+    )
+    html = re.sub(
+        r'url\((["\']?)((?:\.\.\/)?(?:uploads|artifacts)/[^"\')\s]+)\1\)',
+        _replace_url,
+        html,
+        flags=re.IGNORECASE,
+    )
+
+    def _replace_js_path_pub(m: re.Match) -> str:
+        quote, path = m.group(1), m.group(2)
+        normalized = path[3:] if path.startswith("../") else path
+        return f'{quote}{base_url}/p/{public_token}/files/{normalized}'
+
+    html = re.sub(
+        r'(["\'\`])((?:\.\.\/)?(?:uploads|artifacts)/)',
+        _replace_js_path_pub,
+        html,
+        flags=re.IGNORECASE,
+    )
+    return html

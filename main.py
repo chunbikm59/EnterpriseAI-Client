@@ -13,6 +13,8 @@ from routers import debug_chat
 from routers import user_files
 from routers import published
 from routers import pptx_preview
+from routers import memory
+from routers import artifact_preview
 
 logging.basicConfig(level=logging.WARNING, force=True)
 logging.getLogger("chainlit_app").setLevel(logging.DEBUG)
@@ -34,6 +36,8 @@ app.include_router(debug_chat.router, prefix="/api/debug", tags=["Debug"])
 app.include_router(user_files.router, prefix="/api/user-files", tags=["User Files"])
 app.include_router(published.router, tags=["Published"])
 app.include_router(pptx_preview.router, tags=["PPTX Preview"])
+app.include_router(memory.router, prefix="/api/memory", tags=["Memory"])
+app.include_router(artifact_preview.router, tags=["Artifact Preview"])
 
 
 @app.get("/api/config")

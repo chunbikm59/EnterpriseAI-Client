@@ -219,31 +219,28 @@ def _restore_image_content(content: Any, image_paths: List[str]) -> Any:
     return result
 
 
-def load_conversation_full(file_path: str) -> List[Dict]:
-    """載入 JSONL 並還原圖片 base64，使 LLM 上下文與原始完全一致。
-
-    策略：
-    1. 讀取全部 records，套用 edit cutoff 取得 active_records
-    2. 從 active_records 建立 upload_map
-    3. 組裝 message_history，遇到佔位符時從磁碟重新編碼圖片
-    """
+def _read_raw_records(file_path: str) -> list:
+    """讀取 JSONL 並回傳所有 records，供多個 load 函數共用。"""
     if not os.path.exists(file_path):
         return []
-
     try:
         with open(file_path, "r", encoding="utf-8") as f:
-            raw_records = []
+            records = []
             for line in f:
                 line = line.strip()
                 if not line:
                     continue
                 try:
-                    raw_records.append(json.loads(line))
+                    records.append(json.loads(line))
                 except json.JSONDecodeError:
                     continue
+        return records
     except Exception:
         return []
 
+
+def _build_history_from_raw(raw_records: list) -> List[Dict]:
+    """從已讀取的 raw_records 組裝 message_history。"""
     _, active_messages, upload_inheritance = _replay_records(raw_records)
 
     # 建立所有 user message uuid 集合（含歷史被截斷的），用於 upload_map 查找
@@ -305,6 +302,11 @@ def load_conversation_full(file_path: str) -> List[Dict]:
         history.append(entry)
 
     return history
+
+
+def load_conversation_full(file_path: str) -> List[Dict]:
+    """載入 JSONL 並還原圖片 base64，使 LLM 上下文與原始完全一致。"""
+    return _build_history_from_raw(_read_raw_records(file_path))
 
 
 def _uuid_exists_in_jsonl(file_path: str, target_uuid: str) -> str | None:
@@ -428,46 +430,32 @@ def append_title(file_path: str, conversation_id: str, title: str) -> None:
         f.flush()
 
 
-def load_artifact_history(file_path: str, conversation_folder: str) -> list:
-    """從 JSONL 掃出所有 ArtifactChip 記錄，按對話順序從磁碟讀回 html。
-    回傳格式與 artifact_history session 一致：[{artifact_id, html_code, title}, ...]
-    最新的排在 index 0。
-    """
-    if not os.path.exists(file_path):
-        return []
+def _build_artifacts_from_raw(raw_records: list, conversation_folder: str) -> list:
+    """從已讀取的 raw_records 掃出 ArtifactChip 記錄並讀回 html。"""
     artifacts_dir = os.path.join(conversation_folder, "artifacts")
     seen = set()
-    ordered = []  # 依出現順序（舊→新）
+    ordered = []
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
+        for rec in raw_records:
+            if rec.get("record_type") != "ui_event" or rec.get("event_type") != "message":
+                continue
+            for el in rec.get("elements", []):
+                if el.get("kind") != "custom" or el.get("name") != "ArtifactChip":
                     continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
+                props = el.get("props", {})
+                artifact_id = props.get("payload", {}).get("artifact_id", "") or props.get("artifact_id", "")
+                title = props.get("title", artifact_id)
+                if not artifact_id or artifact_id in seen:
                     continue
-                if rec.get("record_type") != "ui_event" or rec.get("event_type") != "message":
+                html_path = os.path.join(artifacts_dir, f"artifact_{artifact_id}.html")
+                if not os.path.exists(html_path):
                     continue
-                for el in rec.get("elements", []):
-                    if el.get("kind") != "custom" or el.get("name") != "ArtifactChip":
-                        continue
-                    props = el.get("props", {})
-                    artifact_id = props.get("payload", {}).get("artifact_id", "") or props.get("artifact_id", "")
-                    title = props.get("title", artifact_id)
-                    if not artifact_id or artifact_id in seen:
-                        continue
-                    html_path = os.path.join(artifacts_dir, f"artifact_{artifact_id}.html")
-                    if not os.path.exists(html_path):
-                        continue
-                    with open(html_path, encoding="utf-8") as hf:
-                        html_code = hf.read()
-                    seen.add(artifact_id)
-                    ordered.append({"artifact_id": artifact_id, "html_code": html_code, "title": title})
+                with open(html_path, encoding="utf-8") as hf:
+                    html_code = hf.read()
+                seen.add(artifact_id)
+                ordered.append({"artifact_id": artifact_id, "html_code": html_code, "title": title})
     except Exception:
         return []
-    # 最新的排在最前面
     ordered.reverse()
 
     if ordered:
@@ -489,26 +477,39 @@ def load_artifact_history(file_path: str, conversation_folder: str) -> list:
     return ordered
 
 
+def _build_title_from_raw(raw_records: list) -> Optional[str]:
+    """從已讀取的 raw_records 取最後一筆 title entry。"""
+    last_title = None
+    for rec in raw_records:
+        if rec.get("record_type") == "title":
+            last_title = rec.get("title")
+    return last_title
+
+
+def load_artifact_history(file_path: str, conversation_folder: str) -> list:
+    """從 JSONL 掃出所有 ArtifactChip 記錄，按對話順序從磁碟讀回 html。
+    回傳格式與 artifact_history session 一致：[{artifact_id, html_code, title}, ...]
+    最新的排在 index 0。
+    """
+    return _build_artifacts_from_raw(_read_raw_records(file_path), conversation_folder)
+
+
 def read_title(file_path: str) -> Optional[str]:
     """從 JSONL 讀取最後一筆 title entry。"""
-    if not os.path.exists(file_path):
-        return None
-    last_title = None
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if record.get("record_type") == "title":
-                    last_title = record.get("title")
-    except Exception:
-        return None
-    return last_title
+    return _build_title_from_raw(_read_raw_records(file_path))
+
+
+def load_resume_data(file_path: str, conversation_folder: str) -> tuple:
+    """一次讀 JSONL，同時回傳 (message_history, title, artifact_history)。
+    供 on_chat_resume 使用，避免重複讀取同一個檔案。
+    """
+    raw_records = _read_raw_records(file_path)
+    if not raw_records:
+        return [], None, []
+    history = _build_history_from_raw(raw_records)
+    title = _build_title_from_raw(raw_records)
+    artifacts = _build_artifacts_from_raw(raw_records, conversation_folder)
+    return history, title, artifacts
 
 
 def list_user_conversations(

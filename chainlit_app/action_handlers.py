@@ -155,8 +155,25 @@ async def on_publish_artifact(action: cl.Action):
     user = cl.user_session.get("user")
     user_id = user.identifier if user else "unknown"
 
-    token = await asyncio.to_thread(publish_artifact, artifact_id, title, user_id, html_path)
+    async with aiofiles.open(html_path, encoding="utf-8") as f:
+        html_content = await f.read()
+
     base_url = os.getenv("CHAINLIT_URL", "http://localhost:8000")
+
+    token = await asyncio.to_thread(
+        publish_artifact, artifact_id, title, user_id, html_path,
+        html_content=html_content,
+        conversation_folder=conversation_folder,
+    )
+    from utils.signed_url import rewrite_html_paths_for_publish
+    rewritten_html = await asyncio.to_thread(
+        rewrite_html_paths_for_publish, html_content, token, base_url
+    )
+    await asyncio.to_thread(
+        publish_artifact, artifact_id, title, user_id, html_path,
+        html_content=rewritten_html,
+        conversation_folder=conversation_folder,
+    )
     public_url = f"{base_url}/p/{token}"
 
     history: list = cl.user_session.get("artifact_history", [])

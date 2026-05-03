@@ -56,6 +56,15 @@ async def _handle_render_html(payload: dict, send_message: bool = True):
     html_code   = payload["html_code"]
     title       = payload["title"]
 
+    # 替換相對圖片路徑為 /api/user-files/ URL（預覽用，原始 html_code 保留在 payload/history 中供發布使用）
+    from utils.signed_url import rewrite_html_img_paths
+    user = cl.user_session.get("user")
+    conversation_id = cl.user_session.get("conversation_id", "")
+    if user and conversation_id:
+        html_code_for_display = rewrite_html_img_paths(html_code, user.identifier, conversation_id)
+    else:
+        html_code_for_display = html_code
+
     history: list = cl.user_session.get("artifact_history", [])
     if send_message:
         # 新 artifact：插入 history（去重後再插）
@@ -68,16 +77,39 @@ async def _handle_render_html(payload: dict, send_message: bool = True):
 
     history_meta = [{"artifact_id": h["artifact_id"], "title": h["title"]} for h in history]
 
+    # 對所有 history 項目做路徑替換，以確保切換到任何版本時圖片都能正常顯示
+    if user and conversation_id:
+        history_for_display = [
+            {**h,
+             "html_code": rewrite_html_img_paths(h["html_code"], user.identifier, conversation_id),
+             "conversation_id": conversation_id}
+            for h in history
+        ]
+    else:
+        history_for_display = [
+            {**h, "conversation_id": conversation_id}
+            for h in history
+        ]
+
+    # sidebar 定位到被點擊的 artifact 版本
+    current_index = next(
+        (i for i, h in enumerate(history) if h["artifact_id"] == artifact_id), 0
+    )
+    current_display_item = history_for_display[current_index] if history_for_display else None
+    current_html_for_display = (current_display_item["html_code"] if current_display_item
+                                else html_code_for_display)
+
     elem = cl.CustomElement(
         name="HtmlRenderer",
         props={
-            "html_code":    html_code,
-            "title":        title,
-            "artifact_id":  artifact_id,
-            "history":      history_meta,
-            "history_data": history,
-            "current_index": 0,
-            "published_url": payload.get("published_url"),
+            "html_code":       current_html_for_display,
+            "title":           title,
+            "artifact_id":     artifact_id,
+            "conversation_id": conversation_id,
+            "history":         history_meta,
+            "history_data":    history_for_display,
+            "current_index":   current_index,
+            "published_url":   payload.get("published_url"),
         },
         display="side",
     )
@@ -243,54 +275,6 @@ async def _handle_render_markdown(payload: dict, send_message: bool = True):
     )
     await cl.ElementSidebar.set_title(f"文件 — {title}")
     await cl.ElementSidebar.set_elements([elem])
-
-
-async def _inject_image_files(
-    image_files: dict,
-    message_history: list,
-    label_prefix: str = "圖片",
-):
-    """讀取圖片路徑 dict，轉 base64 後以 assistant 訊息插入 message_history，並持久化。
-
-    image_files: {label: abs_path}
-    """
-    img_content: list = []
-    for label, abs_path in image_files.items():
-        try:
-            with open(abs_path, "rb") as _f:
-                raw = _f.read()
-            ext = os.path.splitext(abs_path)[1].lower()
-            mime = "image/png" if ext == ".png" else "image/jpeg"
-            raw = _resize_image_bytes(raw, mime)
-            b64 = base64.b64encode(raw).decode("utf-8")
-            img_content.append({"type": "text", "text": f"{label_prefix}: {label}"})
-            img_content.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:{mime};base64,{b64}"},
-            })
-        except Exception as _e:
-            img_content.append({"type": "text", "text": f"{label_prefix} {label} 圖片讀取失敗：{_e}"})
-
-    if not img_content:
-        return
-
-    message_history.append({"role": "assistant", "content": img_content})
-    cl.user_session.set("message_history", message_history)
-
-    rel_paths = [_to_rel_path(p) for p in image_files.values()]
-    await _persist_entry("assistant", img_content, image_paths=rel_paths)
-
-    if ENABLE_SESSION_HISTORY:
-        sf = cl.user_session.get('session_file')
-        if sf:
-            event_files = [
-                {"permanent_path": p, "original_name": os.path.basename(p)}
-                for p in rel_paths
-            ]
-            await asyncio.to_thread(
-                append_ui_event, sf, "assistant_image", {"files": event_files}
-            )
-
 
 async def _persist_entry(role, content, tool_calls=None, tool_call_id=None, image_paths=None):
     """持久化一條對話記錄到 JSONL，若未啟用 session history 則直接返回。"""
@@ -853,9 +837,12 @@ async def run(message_history, initial_msg=None):
                     existing_files = await get_files_state(os.path.join(file_folder, "artifacts"))
 
                 # ── Memory 層 2：每個工具執行後檢查注入（對齊 Claude Code 行為）──
-                memory_injected_this_turn, already_surfaced, message_history = await consume_memory_prefetch(
+                memory_injected_this_turn, already_surfaced, message_history, _newly_injected = await consume_memory_prefetch(
                     memory_prefetch_task, memory_injected_this_turn, already_surfaced, message_history
                 )
+                if _newly_injected:
+                    async with cl.Step(name="記憶載入", type="retrieval") as _mem_step:
+                        _mem_step.output = "\n".join(f"- {f}" for f in _newly_injected)
                 if memory_injected_this_turn:
                     cl.user_session.set("message_history", message_history)
                     cl.user_session.set("memory_surfaced_paths", already_surfaced)
@@ -935,7 +922,7 @@ async def run(message_history, initial_msg=None):
 
     async def _run_and_update_cursor():
         await asyncio.sleep(0)
-        new_cursor, new_turns = await extract_memories_background(
+        new_cursor, new_turns, _written_files = await extract_memories_background(
             user_id=user_id,
             recent_messages=message_history,
             main_wrote_memory=main_wrote_memory,
@@ -951,5 +938,8 @@ async def run(message_history, initial_msg=None):
             "[memory_extractor] 游標更新 %d→%d turns_since→%d",
             _extraction_cursor, new_cursor, new_turns,
         )
+        if _written_files:
+            async with cl.Step(name="記憶更新", type="tool") as _mem_step:
+                _mem_step.output = "\n".join(f"- {f}" for f in _written_files)
 
     asyncio.ensure_future(_run_and_update_cursor())

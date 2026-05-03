@@ -44,9 +44,10 @@ export default function HtmlRenderer() {
   }, [latestArtifactId]);
 
   const currentItem = historyData[currentIndex] || {
-    artifact_id: props.artifact_id || "init",
-    html_code:   initialHtml,
-    title:       initialTitle,
+    artifact_id:     props.artifact_id     || "init",
+    html_code:       initialHtml,
+    title:           initialTitle,
+    conversation_id: props.conversation_id || "",
   };
 
   const publishedUrl =
@@ -91,10 +92,17 @@ export default function HtmlRenderer() {
   }
 
   function handleOpenNew() {
-    const blob = new Blob([currentItem.html_code], { type: "text/html" });
-    const url  = URL.createObjectURL(blob);
-    window.open(url, "_blank");
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    const convId = currentItem.conversation_id;
+    if (convId) {
+      const url = `/api/artifact-preview/${currentItem.artifact_id}?conversation_id=${encodeURIComponent(convId)}`;
+      window.open(url, "_blank");
+    } else {
+      // fallback：舊 session 無 conversation_id 時用 blob URL
+      const blob = new Blob([currentItem.html_code], { type: "text/html" });
+      const url  = URL.createObjectURL(blob);
+      window.open(url, "_blank");
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    }
   }
 
   async function handlePublish() {
