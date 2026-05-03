@@ -302,6 +302,18 @@ async def execute_tool(tool_name: str, tool_input: Dict[str, Any]):
 
     # buildin 工具：直接呼叫 Python 函數（不走 MCP HTTP）
     if tool_name in _BUILDIN_FUNC_MAP:
+        if tool_name == "delete_file":
+            path = tool_input.get("path", "")
+            res = await cl.AskActionMessage(
+                content=f"Agent 要求刪除：`{path}`，確認執行？",
+                actions=[
+                    cl.Action(name="confirm_delete", payload={"value": "confirm"}, label="確認刪除"),
+                    cl.Action(name="cancel_delete", payload={"value": "cancel"}, label="取消"),
+                ],
+            ).send()
+            if not res or res.get("payload", {}).get("value") != "confirm":
+                return "使用者取消了刪除操作。"
+
         session_id = cl.user_session.get('id')
         user_id = cl.user_session.get('user').identifier
         conversation_folder = cl.user_session.get('file_folder')

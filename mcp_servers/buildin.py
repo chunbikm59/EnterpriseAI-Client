@@ -21,8 +21,17 @@ import subprocess
 import shutil
 import uuid
 from utils.llm_client import get_llm_client, get_model_setting
-from utils.user_profile import get_user_profile_dir, get_user_memory_dir, get_conversation_artifacts_dir
-from utils.signed_url import rewrite_artifact_paths
+from utils.user_profile import (
+    get_user_profile_dir, get_user_memory_dir, get_user_skills_dir,
+    get_conversation_artifacts_dir,
+)
+from utils.signed_url import rewrite_artifact_paths, fix_md_relative_paths
+from utils.skills_manager import (
+    skills_from_json, get_skill_content,
+    _parse_frontmatter as _pfm,
+    discover_skills as _discover_skills,
+    skills_to_json as _s2j,
+)
 from utils.memory_manager import (
     write_memory_file, write_memory_index,
     load_memory_file, load_memory_index, list_memory_files,
@@ -867,13 +876,6 @@ async def activate_skill(
     if not skills_json:
         return "錯誤：此 session 無可用技能。"
 
-    # 動態 import（避免在模組初始化時觸發 sys.path 競態）
-    import sys as _sys, os as _os
-    _project_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-    if _project_root not in _sys.path:
-        _sys.path.insert(0, _project_root)
-    from utils.skills_manager import skills_from_json, get_skill_content
-
     skills = skills_from_json(skills_json)
     body = get_skill_content(skill_name, skills)
 
@@ -1045,12 +1047,6 @@ async def _write_skill_file(target_abs: str, user_skills_abs: str, content: str,
         return f"檔案已寫入：{rel}"
 
     # SKILL.md：驗證 frontmatter
-    import sys as _sys
-    _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if _project_root not in _sys.path:
-        _sys.path.insert(0, _project_root)
-    from utils.skills_manager import _parse_frontmatter as _pfm
-
     try:
         metadata, _ = _pfm(content)
     except ValueError as e:
@@ -1062,7 +1058,6 @@ async def _write_skill_file(target_abs: str, user_skills_abs: str, content: str,
         return "SKILL.md 驗證失敗，請修正以下錯誤後重新寫入：\n" + "\n".join(f"- {e}" for e in errors)
 
     # 驗證通過：更新當前 session 的技能 catalog
-    from utils.skills_manager import discover_skills as _discover_skills, skills_to_json as _s2j
     updated_skills = _discover_skills(user_id)
     if session_id:
         _session_skill_catalogs[session_id] = _s2j(updated_skills)
@@ -1109,6 +1104,7 @@ async def write_file(
 
     norm = path.replace("\\", "/").lstrip("/")
     memory_dir_abs = os.path.realpath(get_user_memory_dir(user_id))
+    profile_dir_abs = os.path.realpath(get_user_profile_dir(user_id))
     conv_abs = os.path.realpath(conversation_folder)
 
     artifacts_dir = get_conversation_artifacts_dir(conversation_folder)
@@ -1122,9 +1118,8 @@ async def write_file(
         target_abs = os.path.realpath(os.path.join(memory_dir_abs, norm[len("memory/"):]))
     elif norm.startswith("skills/"):
         # 簡短格式 skills/{name}/... → 自動對應至當前使用者的 skills 目錄
-        from utils.user_profile import get_user_skills_dir as _get_user_skills_dir
         target_abs = os.path.realpath(os.path.join(
-            _get_user_skills_dir(user_id), norm[len("skills/"):]
+            get_user_skills_dir(user_id), norm[len("skills/"):]
         ))
     elif norm.startswith("user_profiles/"):
         target_abs = os.path.realpath(os.path.join(
@@ -1142,13 +1137,12 @@ async def write_file(
         return write_memory_file(user_id, filename, content)
 
     # Skills 目錄寫入（自動驗證 SKILL.md）
-    from utils.user_profile import get_user_skills_dir as _guskd
-    user_skills_abs = os.path.realpath(_guskd(user_id))
+    user_skills_abs = os.path.realpath(get_user_skills_dir(user_id))
     if target_abs.startswith(user_skills_abs + os.sep):
         return await _write_skill_file(target_abs, user_skills_abs, content, session_id, user_id)
 
-    # 跨用戶存取保護
-    if "user_profiles" in norm and not target_abs.startswith(memory_dir_abs):
+    # 跨用戶存取保護：只能存取自己的 profile 目錄
+    if "user_profiles" in norm and not target_abs.startswith(profile_dir_abs + os.sep):
         return "存取拒絕：不能存取其他使用者的目錄。"
 
     # 對話資料夾寫入（限 artifacts/ 子目錄）
@@ -1156,7 +1150,6 @@ async def write_file(
         return "存取拒絕：只能寫入自己的對話 artifacts/ 資料夾或記憶目錄。"
     os.makedirs(os.path.dirname(target_abs), exist_ok=True)
     if target_abs.endswith(".md"):
-        from utils.signed_url import fix_md_relative_paths
         content = fix_md_relative_paths(content, target_abs)
     with open(target_abs, "w", encoding="utf-8") as f:
         f.write(content)
@@ -1179,26 +1172,28 @@ async def write_file(
 @mcp.tool()
 async def delete_file(
     path: str = Field(description=(
-        "要刪除的檔案路徑：\n"
-        "- 對話 artifacts 檔案：artifacts/output.md（需含 artifacts/ 前綴）\n"
+        "要刪除的檔案或資料夾路徑：\n"
+        "- 對話 artifacts 檔案或子目錄：artifacts/output.md、artifacts/subdir/\n"
         "- 記憶檔案：memory/filename.md\n"
-        "  刪除記憶檔後需同步更新 MEMORY.md 移除對應條目"
+        "  刪除記憶檔後需同步更新 MEMORY.md 移除對應條目\n"
+        "- 使用者技能子目錄：user_profiles/{user_id}/skills/{skill_name}/\n"
+        "注意：第一層直接子目錄（如 artifacts/ 本身、skills/ 本身）不可刪除"
     )),
 ) -> str:
-    """刪除對話資料夾或記憶目錄中的指定檔案。"""
+    """刪除對話資料夾或記憶目錄中的指定檔案或子資料夾。第一層直接子目錄不可刪除。"""
     ctx_data = _session_ctx.get()
     user_id = ctx_data["user_id"]
     conversation_folder = get_conversation_folder()
 
-    norm = path.replace("\\", "/").lstrip("/")
+    norm = path.replace("\\", "/").lstrip("/").rstrip("/")
     memory_dir_abs = os.path.realpath(get_user_memory_dir(user_id))
+    profile_dir_abs = os.path.realpath(get_user_profile_dir(user_id))
     conv_abs = os.path.realpath(conversation_folder)
 
     # 解析輸入路徑為絕對路徑
     if os.path.isabs(path):
         target_abs = os.path.realpath(path)
     elif norm.startswith("memory/"):
-        # 簡短格式 memory/filename.md → 自動對應至當前使用者的 memory 目錄
         target_abs = os.path.realpath(os.path.join(memory_dir_abs, norm[len("memory/"):]))
     elif norm.startswith("user_profiles/"):
         target_abs = os.path.realpath(os.path.join(
@@ -1207,8 +1202,10 @@ async def delete_file(
     else:
         target_abs = os.path.realpath(os.path.join(conversation_folder, norm))
 
-    # Memory 目錄
+    # Memory 目錄（只支援檔案，不支援刪整個 memory 目錄）
     if target_abs.startswith(memory_dir_abs + os.sep) or target_abs == memory_dir_abs:
+        if os.path.isdir(target_abs):
+            return "存取拒絕：不能刪除記憶目錄本身。"
         filename = os.path.basename(target_abs)
         filepath, err = validate_memory_path(user_id, filename)
         if err:
@@ -1218,15 +1215,37 @@ async def delete_file(
         os.remove(filepath)
         return f"已刪除記憶檔案：{filename}（請記得更新 MEMORY.md）"
 
-    # 跨用戶存取保護
-    if "user_profiles" in norm and not target_abs.startswith(memory_dir_abs):
+    # 跨用戶存取保護：只能存取自己的 profile 目錄
+    if "user_profiles" in norm and not target_abs.startswith(profile_dir_abs + os.sep):
         return "存取拒絕：不能存取其他使用者的目錄。"
+
+    # Profile 目錄下的刪除（skills 等）
+    if target_abs.startswith(profile_dir_abs + os.sep):
+        if not os.path.exists(target_abs):
+            return f"不存在：{os.path.basename(target_abs)}"
+        # 第一層子目錄（如 skills/ 本身）不可刪
+        parent = os.path.dirname(target_abs)
+        if os.path.realpath(parent) == profile_dir_abs:
+            return f"存取拒絕：不能刪除第一層目錄 {os.path.basename(target_abs)}/。"
+        if os.path.isdir(target_abs):
+            shutil.rmtree(target_abs)
+            return f"已刪除資料夾：{os.path.basename(target_abs)}/"
+        os.remove(target_abs)
+        return f"已刪除：{os.path.basename(target_abs)}"
 
     # 對話資料夾刪除
     if not target_abs.startswith(conv_abs + os.sep):
         return "存取拒絕：只能刪除自己的對話資料夾或記憶目錄中的檔案。"
     if not os.path.exists(target_abs):
-        return f"檔案不存在：{os.path.basename(target_abs)}"
+        return f"不存在：{os.path.basename(target_abs)}"
+    # 第一層子目錄（如 artifacts/ 本身）不可刪
+    parent = os.path.dirname(target_abs)
+    if os.path.realpath(parent) == conv_abs:
+        if os.path.isdir(target_abs):
+            return f"存取拒絕：不能刪除第一層目錄 {os.path.basename(target_abs)}/。"
+    if os.path.isdir(target_abs):
+        shutil.rmtree(target_abs)
+        return f"已刪除資料夾：{os.path.basename(target_abs)}/"
     os.remove(target_abs)
     return f"已刪除：{os.path.basename(target_abs)}"
 
