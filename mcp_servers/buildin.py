@@ -989,13 +989,101 @@ async def _list_files_internal(root_folder: str, offset: int = 0, limit: int = 2
     except Exception as e:
         return f"列出檔案時發生錯誤: {str(e)}"
 
+
+_SKILL_ALLOWED_FIELDS = {"name", "description", "license", "allowed-tools", "metadata", "compatibility"}
+
+
+def _validate_skill_frontmatter(metadata: dict, skill_dir_name: str) -> list[str]:
+    import unicodedata as _ud
+    errors = []
+    extra = set(metadata.keys()) - _SKILL_ALLOWED_FIELDS
+    if extra:
+        errors.append(f"frontmatter 含不允許的欄位：{', '.join(sorted(extra))}。允許欄位：{sorted(_SKILL_ALLOWED_FIELDS)}")
+    if "name" not in metadata:
+        errors.append("缺少必填欄位：name")
+    else:
+        name = str(metadata["name"]).strip()
+        name = _ud.normalize("NFKC", name)
+        if len(name) == 0:
+            errors.append("name 不能為空")
+        elif len(name) > 64:
+            errors.append(f"name 超過 64 字元限制（目前 {len(name)} 字元）")
+        elif name != name.lower():
+            errors.append("name 必須全小寫")
+        elif name.startswith("-") or name.endswith("-"):
+            errors.append("name 不能以連字符開頭或結尾")
+        elif "--" in name:
+            errors.append("name 不能含連續連字符")
+        elif not all(c.isalnum() or c == "-" for c in name):
+            errors.append(f"name '{name}' 含非法字元，只允許字母、數字、連字符")
+        elif _ud.normalize("NFKC", skill_dir_name) != name:
+            errors.append(f"技能目錄名稱 '{skill_dir_name}' 必須與 name '{name}' 完全相符")
+    if "description" not in metadata:
+        errors.append("缺少必填欄位：description")
+    else:
+        desc = str(metadata.get("description", "")).strip()
+        if not desc:
+            errors.append("description 不能為空")
+        elif len(desc) > 1024:
+            errors.append(f"description 超過 1024 字元限制（目前 {len(desc)} 字元）")
+    if "compatibility" in metadata:
+        compat = str(metadata["compatibility"])
+        if len(compat) > 500:
+            errors.append(f"compatibility 超過 500 字元限制（目前 {len(compat)} 字元）")
+    return errors
+
+
+async def _write_skill_file(target_abs: str, user_skills_abs: str, content: str, session_id: str, user_id: str) -> str:
+    os.makedirs(os.path.dirname(target_abs), exist_ok=True)
+    with open(target_abs, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    fname = os.path.basename(target_abs)
+    if fname not in ("SKILL.md", "skill.md"):
+        _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        rel = os.path.relpath(target_abs, _project_root).replace("\\", "/")
+        return f"檔案已寫入：{rel}"
+
+    # SKILL.md：驗證 frontmatter
+    import sys as _sys
+    _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if _project_root not in _sys.path:
+        _sys.path.insert(0, _project_root)
+    from utils.skills_manager import _parse_frontmatter as _pfm
+
+    try:
+        metadata, _ = _pfm(content)
+    except ValueError as e:
+        return f"SKILL.md 格式錯誤：{e}"
+
+    skill_dir_name = os.path.basename(os.path.dirname(target_abs))
+    errors = _validate_skill_frontmatter(metadata, skill_dir_name)
+    if errors:
+        return "SKILL.md 驗證失敗，請修正以下錯誤後重新寫入：\n" + "\n".join(f"- {e}" for e in errors)
+
+    # 驗證通過：更新當前 session 的技能 catalog
+    from utils.skills_manager import discover_skills as _discover_skills, skills_to_json as _s2j
+    updated_skills = _discover_skills(user_id)
+    if session_id:
+        _session_skill_catalogs[session_id] = _s2j(updated_skills)
+
+    skill_name = metadata["name"]
+    return (
+        f"技能 '{skill_name}' 已成功建立並通過驗證。\n"
+        f"本次對話可立即使用 activate_skill('{skill_name}') 啟用此技能。\n"
+        f"下次對話開始時，技能將自動出現在可用技能清單中。"
+    )
+
+
 @mcp.tool()
 async def write_file(
     path: str = Field(description=(
         "寫入路徑：\n"
         "- 對話 artifacts 資料夾：artifacts/output.md（必須含 artifacts/ 前綴）\n"
         "- 記憶目錄：memory/filename.md\n"
-        "  記憶目錄規則：只允許 .md 副檔名；內容檔上限 4KB；MEMORY.md 索引上限 25KB/200行"
+        "  記憶目錄規則：只允許 .md 副檔名；內容檔上限 4KB；MEMORY.md 索引上限 25KB/200行\n"
+        "- 使用者技能目錄：skills/{name}/SKILL.md 或 skills/{name}/scripts/xxx.py 等\n"
+        "  寫入 SKILL.md 時系統自動驗證格式並更新技能清單"
     )),
     content: str = Field(description="寫入的完整內容"),
 ) -> str:
@@ -1032,6 +1120,12 @@ async def write_file(
     elif norm.startswith("memory/"):
         # 簡短格式 memory/filename.md → 自動對應至當前使用者的 memory 目錄
         target_abs = os.path.realpath(os.path.join(memory_dir_abs, norm[len("memory/"):]))
+    elif norm.startswith("skills/"):
+        # 簡短格式 skills/{name}/... → 自動對應至當前使用者的 skills 目錄
+        from utils.user_profile import get_user_skills_dir as _get_user_skills_dir
+        target_abs = os.path.realpath(os.path.join(
+            _get_user_skills_dir(user_id), norm[len("skills/"):]
+        ))
     elif norm.startswith("user_profiles/"):
         target_abs = os.path.realpath(os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))), norm
@@ -1046,6 +1140,12 @@ async def write_file(
         if filename == "MEMORY.md":
             return write_memory_index(user_id, content)
         return write_memory_file(user_id, filename, content)
+
+    # Skills 目錄寫入（自動驗證 SKILL.md）
+    from utils.user_profile import get_user_skills_dir as _guskd
+    user_skills_abs = os.path.realpath(_guskd(user_id))
+    if target_abs.startswith(user_skills_abs + os.sep):
+        return await _write_skill_file(target_abs, user_skills_abs, content, session_id, user_id)
 
     # 跨用戶存取保護
     if "user_profiles" in norm and not target_abs.startswith(memory_dir_abs):
@@ -1350,7 +1450,7 @@ async def capture_ppt_slides(
 
 
 @mcp.tool()
-async def AskUserQuestion(
+async def ask_user_question(
     form_schema: str = Field(
         description=(
             "問卷表單的 JSON 字串。格式範例：\n"
@@ -1602,7 +1702,7 @@ _FUNC_MAP: dict = {
     "activate_skill": activate_skill,
     "write_file": write_file,
     "delete_file": delete_file,
-    "AskUserQuestion": AskUserQuestion,
+    "ask_user_question": ask_user_question,
     "capture_video_frames": capture_video_frames,
     "capture_ppt_slides": capture_ppt_slides,
     "render_html": render_html,

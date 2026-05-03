@@ -17,7 +17,7 @@ from chainlit_app.mcp_callbacks import on_mcp_connect, on_disconnect, on_mcp_eli
 from chainlit_app.agent import ENABLE_SESSION_HISTORY
 
 ASK_USER_FORM_INSTRUCTIONS = (
-    "\n\nIf you do not understand why the user has denied a tool call, use the AskUserQuestion to ask them."
+    "\n\nIf you do not understand why the user has denied a tool call, use the ask_user_question to ask them."
 )
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
