@@ -2,16 +2,39 @@ import os
 from dotenv import load_dotenv
 from openai import AsyncOpenAI, OpenAI
 
-# 載入 .env
-load_dotenv()
+load_dotenv(override=True)
 
-def get_model_setting():
-    # 可根據需求擴充
-    return {
-        "model": "gpt-4o-mini",
-        "temperature": 1,
+_MODEL_CONFIGS: dict[str, dict] = {
+    "Qwen 3.5": {
+        "display_name": "Qwen 3.5 122B",
+        "model": "qwen/qwen3.5-122b-a10b",
+        "temperature": 0.7,
         "stream": True,
-    }
+        "thinking_budget_tokens_enabled": True,
+    },
+    "Qwen 3.6": {
+        "display_name": "Qwen 3.6 27B",
+        "model": "qwen/qwen3.6-27b",
+        "temperature": 0.7,
+        "stream": True,
+        "thinking_budget_tokens_enabled": True,
+    },
+}
+
+_DEFAULT_PROFILE = "Qwen 3.5"
+
+def get_all_model_configs() -> dict[str, dict]:
+    return _MODEL_CONFIGS
+
+def get_model_config(profile_name: str | None = None) -> dict:
+    if profile_name and profile_name in _MODEL_CONFIGS:
+        return _MODEL_CONFIGS[profile_name]
+    return _MODEL_CONFIGS[_DEFAULT_PROFILE]
+
+def get_model_setting() -> dict:
+    """向後相容 shim，供背景模組（overseer、memory 等）使用。"""
+    cfg = get_model_config(None)
+    return {"model": cfg["model"], "temperature": cfg["temperature"], "stream": cfg["stream"]}
 
 def get_llm_client(provider: str = None, mode: str = "async", base_url: str = None, api_key: str = None):
     """

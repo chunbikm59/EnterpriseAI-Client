@@ -20,7 +20,7 @@ from utils.context_compressor import (
     should_compress,
 )
 from utils.file_handler import get_files_state, _resize_image_bytes
-from utils.llm_client import get_llm_client, get_model_setting
+from utils.llm_client import get_llm_client, get_model_config
 from utils.memory_extractor import extract_memories_background
 from utils.memory_injection import consume_memory_prefetch
 from utils.memory_prefetch import prefetch_relevant_memories
@@ -465,9 +465,21 @@ async def run(message_history, initial_msg=None):
     for connection_tools in mcp_tools.values():
         all_tools.extend(connection_tools)
 
-    base_model_setting = get_model_setting()
-    chat_params = dict(base_model_setting)
+    selected_model = cl.user_session.get("selected_model")
+    model_cfg = get_model_config(selected_model)
+    chat_params = {
+        "model": model_cfg["model"],
+        "temperature": model_cfg["temperature"],
+        "stream": model_cfg["stream"],
+    }
     chat_params["stream_options"] = {"include_usage": True}  # 串流結束時取得 token 用量
+
+    _extra_body: dict | None = None
+    if model_cfg.get("thinking_budget_tokens_enabled"):
+        _budget_map = {"low": 128, "medium": 1024, "max": -1}
+        _thinking_level = cl.user_session.get("thinking_budget_level", "medium")
+        _extra_body = {"thinking_budget_tokens": _budget_map.get(_thinking_level, 8192)}
+
     if all_tools:
         openai_tools = await format_tools_for_openai(all_tools)
         chat_params["tools"] = openai_tools
@@ -482,7 +494,7 @@ async def run(message_history, initial_msg=None):
         iteration += 1
         try:
             stream = await llm_client.chat.completions.create(
-                messages=message_history, **chat_params
+                messages=message_history, extra_body=_extra_body, **chat_params
             )
         except asyncio.CancelledError:
             raise

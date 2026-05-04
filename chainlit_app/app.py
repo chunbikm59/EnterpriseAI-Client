@@ -37,6 +37,9 @@ from chainlit_app.conversation_history import (
 )
 from chainlit_app.file_handler import process_uploaded_elements
 from chainlit_app.session_state import _init_session_state
+from chainlit.context import context as cl_context
+
+from utils.llm_client import get_all_model_configs, get_model_config
 
 # ── Action handlers（side effect: @cl.action_callback 登記）──
 import chainlit_app.action_handlers  # noqa: F401
@@ -46,11 +49,38 @@ import chainlit_app.oauth_setup  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
+_THINKING_BUDGET_MAP = {"low": 1024, "medium": 8192, "max": -1}
+
+async def _setup_modes():
+    configs = get_all_model_configs()
+    model_mode = cl.Mode(
+        id="model",
+        name="Model",
+        options=[
+            cl.ModeOption(id=name, name=cfg["display_name"], default=(i == 0))
+            for i, (name, cfg) in enumerate(configs.items())
+        ],
+    )
+    modes = [model_mode]
+    if get_model_config(None).get("thinking_budget_tokens_enabled"):
+        modes.append(cl.Mode(
+            id="thinking_budget",
+            name="思考深度",
+            options=[
+                cl.ModeOption(id="low",    name="Low",    description="快速回答"),
+                cl.ModeOption(id="medium", name="Medium", description="均衡思考", default=True),
+                cl.ModeOption(id="max",    name="Max",    description="無限制"),
+            ],
+        ))
+    await cl.context.emitter.set_modes(modes)
+
+
 @cl.on_chat_resume
 async def on_chat_resume(thread):
     """Chainlit 資料持久化恢復時，自動載入最近一次的歷史對話（等同使用者手動 /resume 選第一筆）。"""
     userinfo = cl.user_session.get('user')
     await _init_session_state(userinfo)
+    await _setup_modes()
 
     if not ENABLE_SESSION_HISTORY:
         return
@@ -112,11 +142,11 @@ async def start():
     userinfo = cl.user_session.get('user')
     await cl.Message(content=f'### 你好 {userinfo.identifier}，歡迎回來!　ദ്ദി(˵ •̀ ᴗ - ˵ ) ✧').send()
     await _init_session_state(userinfo)
+    await _setup_modes()
 
 
 @cl.on_chat_end
 async def end():
-    from chainlit.context import context as cl_context
     session = cl_context.session
     if session and session.current_task and not session.current_task.done():
         session.current_task.cancel()
@@ -306,6 +336,14 @@ async def on_message(message: cl.Message):
                     conversation_id=_conv_id,
                     first_message=message.content,
                 ))
+
+    if message.modes:
+        selected_model = message.modes.get("model")
+        if selected_model:
+            cl.user_session.set("selected_model", selected_model)
+        thinking_level = message.modes.get("thinking_budget")
+        if thinking_level:
+            cl.user_session.set("thinking_budget_level", thinking_level)
 
     try:
         await agent(message_history)
