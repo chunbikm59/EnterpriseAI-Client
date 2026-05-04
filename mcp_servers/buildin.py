@@ -876,6 +876,7 @@ async def activate_skill(
     if not skills_json:
         return "錯誤：此 session 無可用技能。"
 
+    _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     skills = skills_from_json(skills_json)
     body = get_skill_content(skill_name, skills)
 
@@ -1585,7 +1586,13 @@ async def render_html(
             "- CDN 引入（如 Chart.js、D3.js、Tailwind CSS、Mermaid.js 等）\n"
             "- SVG 圖形\n"
             "請盡量使用 CDN 引入函式庫，不要依賴本地資源。\n"
-            "推薦 CDN 來源：https://cdn.jsdelivr.net、https://cdnjs.cloudflare.com、https://unpkg.com"
+            "推薦 CDN 來源：https://cdn.jsdelivr.net、https://cdnjs.cloudflare.com、https://unpkg.com\n"
+            "嵌入 YouTube 影片：\n"
+            "- 使用 https://www.youtube-nocookie.com/embed/{VIDEO_ID} 格式\n"
+            "- 時間戳跳轉：用 JS 修改 iframe src 的 ?start={秒數} 參數，例如：\n"
+            "  document.querySelector('iframe').src = 'https://www.youtube-nocookie.com/embed/VIDEO_ID?start=120'\n"
+            "- enablejsapi=1 需在有真實 origin 的環境才能運作（sidebar 預覽為 null origin，不支援；"
+            "新分頁開啟模式有真實 origin，支援）"
         )
     ),
     title: str = Field(
@@ -1619,7 +1626,10 @@ async def render_html(
         "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com "
         "https://unpkg.com https://d3js.org https://code.highcharts.com "
         "https://fonts.googleapis.com https://fonts.gstatic.com "
-        "https://esm.sh https://esm.run;"
+        "https://esm.sh https://esm.run "
+        "https://www.youtube.com https://www.youtube-nocookie.com "
+        "https://i.ytimg.com; "
+        "frame-src https://www.youtube.com https://www.youtube-nocookie.com;"
         '">'
     )
     if "<head" in html_code.lower() and "content-security-policy" not in html_code.lower():
