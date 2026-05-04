@@ -1592,7 +1592,11 @@ async def render_html(
             "- 時間戳跳轉：用 JS 修改 iframe src 的 ?start={秒數} 參數，例如：\n"
             "  document.querySelector('iframe').src = 'https://www.youtube-nocookie.com/embed/VIDEO_ID?start=120'\n"
             "- enablejsapi=1 需在有真實 origin 的環境才能運作（sidebar 預覽為 null origin，不支援；"
-            "新分頁開啟模式有真實 origin，支援）"
+            "新分頁開啟模式有真實 origin，支援）\n"
+            "嵌入使用者上傳的影片（.mp4 / .mkv / .webm 等）：\n"
+            "- 使用 <video> 標籤，src 寫相對路徑 ../uploads/影片檔名\n"
+            "- 例如：<video src=\"../uploads/video.mkv\" controls style=\"width:100%\"></video>\n"
+            "- 系統會自動將相對路徑轉換為完整 API URL"
         )
     ),
     title: str = Field(
@@ -1629,6 +1633,7 @@ async def render_html(
         "https://esm.sh https://esm.run "
         "https://www.youtube.com https://www.youtube-nocookie.com "
         "https://i.ytimg.com; "
+        "media-src 'self' blob: data: http: https:; "
         "frame-src https://www.youtube.com https://www.youtube-nocookie.com;"
         '">'
     )
