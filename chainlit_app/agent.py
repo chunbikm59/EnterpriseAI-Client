@@ -476,7 +476,7 @@ async def run(message_history, initial_msg=None):
 
     _extra_body: dict | None = None
     if model_cfg.get("thinking_budget_tokens_enabled"):
-        _budget_map = {"low": 128, "medium": 1024, "max": -1}
+        _budget_map = {"low": 64, "medium": 256, "max": -1}
         _thinking_level = cl.user_session.get("thinking_budget_level", "medium")
         _extra_body = {"thinking_budget_tokens": _budget_map.get(_thinking_level, 8192)}
 
