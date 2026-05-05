@@ -49,8 +49,6 @@ import chainlit_app.oauth_setup  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
-_THINKING_BUDGET_MAP = {"low": 1024, "medium": 8192, "max": -1}
-
 async def _setup_modes():
     configs = get_all_model_configs()
     model_mode = cl.Mode(
@@ -183,12 +181,48 @@ async def end():
         await asyncio.to_thread(shutil.rmtree, chainlit_tmp, ignore_errors=True)
 
 
+_SKILLS_TAG_OPEN  = "<agent_skills>"
+_SKILLS_TAG_CLOSE = "</agent_skills>"
+
+
+def _rebuild_system_skills_section(skills, disabled_skills: set[str]):
+    """以啟用中的技能重建 system message 的 <agent_skills> 區段。"""
+    from utils.skills_manager import build_skill_catalog_json
+    enabled_skills = [s for s in skills if s.name not in disabled_skills]
+    message_history = cl.user_session.get('message_history', [])
+    if not message_history or message_history[0].get('role') != 'system':
+        return
+
+    system_content: str = message_history[0]['content']
+
+    start = system_content.find(_SKILLS_TAG_OPEN)
+    end   = system_content.find(_SKILLS_TAG_CLOSE)
+    if start != -1 and end != -1:
+        system_content = system_content[:start] + system_content[end + len(_SKILLS_TAG_CLOSE):]
+
+    if enabled_skills:
+        catalog_json = build_skill_catalog_json(enabled_skills)
+        skills_section = (
+            "\n\n<agent_skills>\n"
+            f"以下為你可以使用的技能清單：\n{catalog_json}"
+            "\n\n當使用者的任務符合某個技能的描述時，請呼叫 activate_skill 工具並傳入技能名稱，以載入完整的技能指引。"
+            "\n</agent_skills>"
+        )
+        memory_marker = "\n\n## 使用者記憶索引"
+        if memory_marker in system_content:
+            ins = system_content.index(memory_marker)
+            system_content = system_content[:ins] + skills_section + system_content[ins:]
+        else:
+            system_content += skills_section
+
+    message_history[0]['content'] = system_content
+    cl.user_session.set('message_history', message_history)
+
+
 @cl.on_settings_update
 async def on_settings_update(settings):
-    """處理設定變更，連線或斷線 MCP 伺服器"""
+    """處理設定變更：MCP 伺服器連線/斷線 · 內建工具啟停 · 技能啟停"""
     print("設定已更新:", settings)
-
-    previous_settings = cl.user_session.get('current_settings', {})
     cl.user_session.set('current_settings', settings)
 
     mcp_manager = cl.user_session.get('mcp_manager')
@@ -197,8 +231,9 @@ async def on_settings_update(settings):
 
     chat_setting = cl.user_session.get('chat_setting')
     for element in chat_setting:
-        element.initial = settings.get(element.id, False)
+        element.initial = settings.get(element.id, element.initial)
 
+    # ── Tab 1: MCP 伺服器（維持現有行為） ──
     from utils.mcp_servers_config import get_mcp_servers_config
     mcp_config = get_mcp_servers_config(cl.user_session.get('file_folder'))
     for server_name, config in mcp_config.items():
@@ -207,15 +242,33 @@ async def on_settings_update(settings):
         setting_key = f"mcp_{server_name}"
         is_enabled = settings.get(setting_key, False)
         is_connected = mcp_manager.is_connected(server_name)
-
         if is_enabled and not is_connected:
-            await mcp_manager.add_connection(server_name, config, headers={"X-Session-Id": cl.user_session.get('id'), "X-User-Id": cl.user_session.get('user').identifier})
+            await mcp_manager.add_connection(
+                server_name, config,
+                headers={"X-Session-Id": cl.user_session.get('id'),
+                         "X-User-Id": cl.user_session.get('user').identifier}
+            )
             await cl.Message(content=f"⏳ 正在連線到 MCP 伺服器: {server_name}").send()
         elif not is_enabled and is_connected:
             await mcp_manager.remove_connection(server_name)
             await cl.Message(content=f"🔌 已斷線 MCP 伺服器: {server_name}").send()
-
     await mcp_manager.update_tools()
+
+    # ── Tab 2: 內建工具（立即生效，不顯示訊息） ──
+    disabled_buildin: set[str] = {
+        key[len("buildin_"):] for key, val in settings.items()
+        if key.startswith("buildin_") and not val
+    }
+    cl.user_session.set('disabled_buildin_tools', disabled_buildin)
+
+    # ── Tab 3: Agent Skills（立即生效，不顯示訊息） ──
+    skills = cl.user_session.get('skills', [])
+    disabled_skills: set[str] = {
+        skill.name for skill in skills
+        if not settings.get(f"skill_{skill.name}", True)
+    }
+    cl.user_session.set('disabled_skills', disabled_skills)
+    _rebuild_system_skills_section(skills, disabled_skills)
 
 
 @cl.on_message

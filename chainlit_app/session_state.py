@@ -4,7 +4,7 @@ import os
 import uuid
 
 import chainlit as cl
-from chainlit.input_widget import Switch
+from chainlit.input_widget import Switch, Tab
 from chainlit.types import CommandDict
 
 from mcp_servers.buildin import register_session_skills
@@ -50,12 +50,17 @@ async def _init_session_state(userinfo):
     )
     cl.user_session.set('skills', skills)
 
+    from utils.buildin_tool_runner import get_buildin_tool_schemas
+    buildin_schemas = await get_buildin_tool_schemas()
+
     skills_section = ""
     if skills:
         catalog_json = build_skill_catalog_json(skills)
         skills_section = (
-            f"\n\n以下為你可以使用的技能清單：\n{catalog_json}"
+            "\n\n<agent_skills>\n"
+            f"以下為你可以使用的技能清單：\n{catalog_json}"
             "\n\n當使用者的任務符合某個技能的描述時，請呼叫 activate_skill 工具並傳入技能名稱，以載入完整的技能指引。"
+            "\n</agent_skills>"
         )
 
     memory_section = ""
@@ -84,8 +89,6 @@ async def _init_session_state(userinfo):
         cl.user_session.set('user_id_pending', user_id)
 
     # ChatSettings
-    settings_widgets = []
-
     mcp_config = get_mcp_servers_config(conversation_folder)
     if "playwright" in mcp_config:
         mcp_config['playwright']['args'] += [f"--output-dir={conversation_folder}"]
@@ -96,14 +99,37 @@ async def _init_session_state(userinfo):
             mcp_config['buildin']['env'] = {}
         mcp_config['buildin']['env']['ROOT_FOLDER'] = conversation_folder
 
-    for server_name, config in mcp_config.items():
-        settings_widgets.append(
-            Switch(id=f"mcp_{server_name}", label=f"MCP - {config['name']}", initial=config['enabled'])
-        )
+    mcp_tab_inputs = [
+        Switch(id=f"mcp_{name}", label=f"MCP - {cfg['name']}", initial=cfg['enabled'])
+        for name, cfg in mcp_config.items()
+    ]
+    buildin_tab_inputs = [
+        Switch(id=f"buildin_{s['name']}", label=s['name'], description=s['description'], initial=True)
+        for s in buildin_schemas
+    ]
+    system_skill_inputs = [
+        Switch(id=f"skill_{skill.name}", label=skill.name, description=skill.description, initial=True)
+        for skill in skills if skill.source == "system"
+    ]
+    user_skill_inputs = [
+        Switch(id=f"skill_{skill.name}", label=skill.name, description=skill.description, initial=True)
+        for skill in skills if skill.source == "user"
+    ]
 
-    settings = await cl.ChatSettings(settings_widgets).send()
-    cl.user_session.set('chat_setting', settings_widgets)
+    tabs = [
+        Tab(id="tab_mcp",         label="MCP 伺服器",  inputs=mcp_tab_inputs),
+        Tab(id="tab_buildin",     label="內建工具",     inputs=buildin_tab_inputs),
+        Tab(id="tab_sys_skill",   label="系統 Skill",  inputs=system_skill_inputs),
+        Tab(id="tab_user_skill",  label="個人 Skill",  inputs=user_skill_inputs),
+    ]
+
+    settings = await cl.ChatSettings(tabs).send()
+
+    all_widgets = mcp_tab_inputs + buildin_tab_inputs + system_skill_inputs + user_skill_inputs
+    cl.user_session.set('chat_setting', all_widgets)
     cl.user_session.set('current_settings', settings)
+    cl.user_session.set('disabled_buildin_tools', set())
+    cl.user_session.set('disabled_skills', set())
 
     session_id = cl.user_session.get('id')
     mcp_manager = MCPConnectionManager(

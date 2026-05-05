@@ -458,7 +458,9 @@ async def run(message_history, initial_msg=None):
     llm_client = get_llm_client(mode="async")
 
     # buildin 工具 schema（直接從 FastMCP 取，不走 HTTP）
-    buildin_schemas = await get_buildin_tool_schemas()
+    buildin_schemas_all = await get_buildin_tool_schemas()
+    disabled_buildin: set[str] = cl.user_session.get('disabled_buildin_tools', set())
+    buildin_schemas = [s for s in buildin_schemas_all if s['name'] not in disabled_buildin]
     # 外部 MCP 工具 schema（stdio transport 等）
     mcp_tools = cl.user_session.get("mcp_manager").tools
     all_tools = list(buildin_schemas)
