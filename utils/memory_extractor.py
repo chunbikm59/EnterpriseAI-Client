@@ -142,7 +142,7 @@ def _build_extract_user_message(new_message_count: int, existing_memories: str) 
 
 ## 如何更新記憶（兩步驟）
 
-**步驟 1** — 用 write_file 將記憶寫入獨立檔案（例如 `user_profiles/{{user_id}}/memory/user_role.md`），格式如下：
+**步驟 1** — 用 write_file 將記憶寫入獨立檔案（例如 `memory/user_role.md`），格式如下：
 
 ```
 ---
@@ -154,7 +154,7 @@ type: user|feedback|project|reference
 記憶內容（feedback/project 類型請包含 **Why:** 和 **How to apply:** 行）
 ```
 
-**步驟 2(如有必要才做)** — 用 write_file 更新 `user_profiles/{{user_id}}/memory/MEMORY.md` 索引，新增一行：
+**步驟 2(如有必要才做)** — 用 write_file 更新 `memory/MEMORY.md` 索引，新增一行：
 `- [名稱](file.md) — 一行鉤子（約 150 字元）`
 MEMORY.md 不含 frontmatter，不直接寫記憶內容。只在 description 真正改變時才更新索引。
 
