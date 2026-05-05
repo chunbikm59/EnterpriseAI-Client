@@ -271,6 +271,14 @@ async def read_file(
     if not await asyncio.to_thread(os.path.exists, abs_path):
         return f"檔案不存在：{filename}"
 
+    # 圖片格式：直接以 __image_files__ 格式回傳，由 agent 注入 image_url
+    _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
+    if os.path.splitext(abs_path)[1].lower() in _IMAGE_EXTENSIONS:
+        return json.dumps(
+            {"__image_files__": {os.path.basename(abs_path): abs_path}, "summary": f"圖片：{filename}"},
+            ensure_ascii=False,
+        )
+
     # 100 MB 上限）
     FILE_SIZE_LIMIT = 100 * 1024 * 1024
     file_size = await asyncio.to_thread(os.path.getsize, abs_path)

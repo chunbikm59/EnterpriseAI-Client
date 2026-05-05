@@ -760,6 +760,7 @@ async def run(message_history, initial_msg=None):
                     _IMAGE_TOOLS = {
                         "capture_video_frames": "時間點",
                         "capture_ppt_slides": "投影片",
+                        "read_file": "圖片",
                     }
                     if tool_name in _IMAGE_TOOLS:
                         try:
