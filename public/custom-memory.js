@@ -98,16 +98,42 @@
     return b;
   }
 
-  // 輕量 Markdown → HTML（處理標題、粗體、斜體、程式碼、清單、換行）
+  // 輕量 Markdown → HTML（標題、粗體、斜體、程式碼、清單、表格、換行）
   function renderMd(md) {
     if (!md) return "";
-    // 先按行處理，再組合
     const lines = md.split("\n");
     const out = [];
     let i = 0;
     while (i < lines.length) {
       const line = lines[i];
-      // 無序清單：收集連續的 "- " 或 "* " 行
+      // 表格：第一行含 |，第二行為分隔行（---|---）
+      if (/^\|/.test(line) && i + 1 < lines.length && /^\|[-| :]+\|/.test(lines[i + 1])) {
+        const headerCells = line.split("|").slice(1, -1).map(c => c.trim());
+        const alignLine = lines[i + 1].split("|").slice(1, -1).map(c => c.trim());
+        const aligns = alignLine.map(a => {
+          if (/^:.*:$/.test(a)) return "center";
+          if (/^:/.test(a))    return "left";
+          if (/:$/.test(a))    return "right";
+          return "left";
+        });
+        const thead = "<thead><tr>" +
+          headerCells.map((h, idx) =>
+            `<th style='padding:6px 10px;border:1px solid #e5e7eb;background:#f9fafb;font-weight:700;text-align:${aligns[idx] || "left"}'>${inlineMd(h)}</th>`
+          ).join("") + "</tr></thead>";
+        i += 2;
+        const bodyRows = [];
+        while (i < lines.length && /^\|/.test(lines[i])) {
+          const cells = lines[i].split("|").slice(1, -1).map(c => c.trim());
+          bodyRows.push("<tr>" +
+            cells.map((c, idx) =>
+              `<td style='padding:5px 10px;border:1px solid #e5e7eb;text-align:${aligns[idx] || "left"}'>${inlineMd(c)}</td>`
+            ).join("") + "</tr>");
+          i++;
+        }
+        out.push(`<table style='border-collapse:collapse;width:100%;margin:10px 0;font-size:12px'>${thead}<tbody>${bodyRows.join("")}</tbody></table>`);
+        continue;
+      }
+      // 無序清單
       if (/^[-*] /.test(line)) {
         const items = [];
         while (i < lines.length && /^[-*] /.test(lines[i])) {
@@ -117,7 +143,7 @@
         out.push("<ul style='margin:6px 0;padding-left:20px;list-style-type:disc'>" + items.join("") + "</ul>");
         continue;
       }
-      // 有序清單：收集連續的 "N. " 行
+      // 有序清單
       if (/^\d+\. /.test(line)) {
         const items = [];
         while (i < lines.length && /^\d+\. /.test(lines[i])) {
@@ -623,5 +649,13 @@
   } else {
     startObserver();
   }
+
+  // 動態載入 Skill 管理模組
+  (function () {
+    const s = document.createElement("script");
+    s.src = "/public/custom-skill.js";
+    s.async = true;
+    document.head.appendChild(s);
+  })();
 
 })();

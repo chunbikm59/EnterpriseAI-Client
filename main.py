@@ -14,6 +14,7 @@ from routers import user_files
 from routers import published
 from routers import pptx_preview
 from routers import memory
+from routers import skills
 from routers import artifact_preview
 
 logging.basicConfig(level=logging.WARNING, force=True)
@@ -37,6 +38,7 @@ app.include_router(user_files.router, prefix="/api/user-files", tags=["User File
 app.include_router(published.router, tags=["Published"])
 app.include_router(pptx_preview.router, tags=["PPTX Preview"])
 app.include_router(memory.router, prefix="/api/memory", tags=["Memory"])
+app.include_router(skills.router, prefix="/api/skills", tags=["Skills"])
 app.include_router(artifact_preview.router, tags=["Artifact Preview"])
 
 
