@@ -88,10 +88,30 @@ async def on_reopen_artifact(action: cl.Action):
 
     # ── PPTX artifact ──
     if pptx_id:
+        title              = action.payload.get("title", pptx_id)
+        initial_pptx_url   = action.payload.get("initial_pptx_url", "")
+        initial_slide_urls = action.payload.get("initial_slide_urls", [])
+
+        # 若 chip_props 中已有 URL（JSONL 持久化路徑），直接推送靜態 element，不跑腳本
+        if initial_pptx_url:
+            elem = cl.CustomElement(
+                name="PptxRenderer",
+                props={
+                    "pptx_id":            pptx_id,
+                    "title":              title,
+                    "initial_pptx_url":   initial_pptx_url,
+                    "initial_slide_urls": initial_slide_urls,
+                },
+                display="side",
+            )
+            await cl.ElementSidebar.set_title(f"簡報 — {title}")
+            await cl.ElementSidebar.set_elements([elem])
+            return
+
+        # Fallback：URL 不存在（舊版 JSONL 沒有記錄），從 session history 或磁碟讀腳本
         pptx_history: list = cl.user_session.get("pptx_history", [])
         payload = next((h for h in pptx_history if h["pptx_id"] == pptx_id), None)
 
-        # 找不到（重新整理後 session 重置）→ 從磁碟讀回腳本
         if not payload:
             conversation_folder = cl.user_session.get("file_folder", "")
             if conversation_folder:
@@ -102,7 +122,7 @@ async def on_reopen_artifact(action: cl.Action):
                 if os.path.exists(js_path):
                     async with aiofiles.open(js_path, encoding="utf-8") as f:
                         pptx_script = await f.read()
-                    payload = {"pptx_id": pptx_id, "pptx_script": pptx_script, "title": pptx_id, "slide_count": 1}
+                    payload = {"pptx_id": pptx_id, "pptx_script": pptx_script, "title": title, "slide_count": 1}
 
         if payload:
             await _handle_render_pptx(payload, send_message=False)

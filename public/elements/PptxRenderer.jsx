@@ -1,17 +1,19 @@
 export default function PptxRenderer() {
-  const pptxId     = props.pptx_id             || "";
-  const script     = props.pptx_script          || null;
-  const partial    = props.pptx_script_partial  || null;
-  const title      = props.title                || "簡報";
-  const slideCount = props.slide_count          || 1;
-  const convId     = props.conversation_id      || "";
+  const pptxId          = props.pptx_id             || "";
+  const script          = props.pptx_script          || null;
+  const partial         = props.pptx_script_partial  || null;
+  const title           = props.title                || "簡報";
+  const slideCount      = props.slide_count          || 1;
+  const convId          = props.conversation_id      || "";
+  const initPptxUrl     = props.initial_pptx_url     || null;
+  const initSlideUrls   = props.initial_slide_urls   || null;
 
-  // status: "streaming" | "loading" | "rendering" | "ready" | "error"
-  const initialStatus = script ? "loading" : "streaming";
+  // 若已有預先存好的 URL（重開路徑），直接跳到 ready
+  const initialStatus = initPptxUrl ? "ready" : (script ? "loading" : "streaming");
   const [status,     setStatus]     = React.useState(initialStatus);
   const [pptxB64,    setPptxB64]    = React.useState(null);
-  const [pptxUrl,    setPptxUrl]    = React.useState(null);
-  const [slideUrls,  setSlideUrls]  = React.useState([]);
+  const [pptxUrl,    setPptxUrl]    = React.useState(initPptxUrl);
+  const [slideUrls,  setSlideUrls]  = React.useState(initSlideUrls || []);
   const [errMsg,     setErrMsg]     = React.useState("");
   const [downloaded, setDownloaded] = React.useState(false);
 

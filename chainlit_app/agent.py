@@ -179,16 +179,9 @@ async def _handle_render_pptx(payload: dict, send_message: bool = True):
         from routers.pptx_preview import _template_registry
         _template_registry[pptx_id] = template_abs_path
 
-    # 儲存至 session pptx_history（供 reopen_artifact 重開使用）
+    # 腳本持久化到磁碟（send_message 路徑才做，reopen 路徑跳過）
     if send_message:
-        pptx_history: list = cl.user_session.get("pptx_history", [])
-        pptx_history = [h for h in pptx_history if h["pptx_id"] != pptx_id]
-        pptx_history.insert(0, payload)
-        if len(pptx_history) > 10:
-            pptx_history = pptx_history[:10]
-        cl.user_session.set("pptx_history", pptx_history)
-
-        # 腳本持久化到磁碟，供重新整理後從磁碟讀回
+        # 腳本持久化到磁碟，供重新整理後從磁碟讀回（現在已不需要，URL 存在 JSONL 中）
         conversation_folder = cl.user_session.get("file_folder", "")
         if conversation_folder:
             import aiofiles as _aio
@@ -241,13 +234,42 @@ async def _handle_render_pptx(payload: dict, send_message: bool = True):
             finally:
                 _pptx_upload_events.pop(pptx_id, None)
 
+        # upload 成功後，組出後端存檔的 URL 並更新 pptx_history
+        if user and conversation_id:
+            safe_uid  = "".join(c if c.isalnum() or c in "-_" else "_" for c in user.identifier)
+            safe_conv = "".join(c if c.isalnum() or c in "-_" else "_" for c in conversation_id)
+            safe_pid  = "".join(c if c.isalnum() or c in "-_" else "_" for c in pptx_id)
+            _base = f"/api/user-files/user_profiles/{safe_uid}/conversations/{safe_conv}/artifacts"
+            _pptx_url   = f"{_base}/{safe_pid}.pptx"
+            _slide_urls = [
+                f"{_base}/{safe_pid}_slide_{i+1:03d}.png"
+                for i in range(slide_count)
+            ]
+            payload["initial_pptx_url"]   = _pptx_url
+            payload["initial_slide_urls"] = _slide_urls
+            # 更新 session history（加入 URL）
+            pptx_history = cl.user_session.get("pptx_history", [])
+            pptx_history = [h for h in pptx_history if h["pptx_id"] != pptx_id]
+            pptx_history.insert(0, payload)
+            if len(pptx_history) > 10:
+                pptx_history = pptx_history[:10]
+            cl.user_session.set("pptx_history", pptx_history)
+
     if not send_message:
         return
+
+    initial_pptx_url   = payload.get("initial_pptx_url", "")
+    initial_slide_urls = payload.get("initial_slide_urls", [])
 
     notif_content = f"📊 **{title}** 已在右側 sidebar 渲染"
     chip_props = {
         "action": "reopen_artifact",
-        "payload": {"pptx_id": pptx_id},
+        "payload": {
+            "pptx_id":            pptx_id,
+            "title":              title,
+            "initial_pptx_url":   initial_pptx_url,
+            "initial_slide_urls": initial_slide_urls,
+        },
         "title": title,
         "icon": "📊",
     }
