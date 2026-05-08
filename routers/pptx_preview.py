@@ -131,10 +131,22 @@ async def pptx_preview(req: PptxPreviewRequest, request: Request):
     try:
         png_paths = await asyncio.to_thread(_render_pages)
     except Exception as e:
+        _upload_entry2 = _pptx_upload_events.get(req.pptx_id)
+        if _upload_entry2 and "png_event" in _upload_entry2 and not _upload_entry2["png_event"].is_set():
+            _upload_entry2["png_result"]["success"] = False
+            _upload_entry2["png_result"]["error"] = str(e)
+            _upload_entry2["png_event"].set()
         shutil.rmtree(tmp_dir, ignore_errors=True)
         raise HTTPException(status_code=500, detail=f"PNG render failed: {e}")
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    # ── 通知後端 PNG 已就緒 ──
+    _upload_entry2 = _pptx_upload_events.get(req.pptx_id)
+    if _upload_entry2 and "png_event" in _upload_entry2:
+        _upload_entry2["png_result"]["success"] = True
+        _upload_entry2["png_result"]["slide_count"] = len(png_paths)
+        _upload_entry2["png_event"].set()
 
     # ── 回傳縮圖 URL（走現有 /api/user-files/ 路由，已有 JWT 驗證）──
     slide_urls = [
@@ -162,5 +174,10 @@ async def pptx_upload_abort(req: PptxAbortRequest):
     if entry:
         entry["result"]["success"] = False
         entry["result"]["error"] = req.error or "前端中止"
-        entry["event"].set()
+        if "event" in entry:
+            entry["event"].set()
+        if "png_event" in entry and not entry["png_event"].is_set():
+            entry["png_result"]["success"] = False
+            entry["png_result"]["error"] = req.error or "前端中止"
+            entry["png_event"].set()
     return JSONResponse({"ok": True})

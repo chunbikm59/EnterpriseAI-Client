@@ -232,7 +232,10 @@ async def _handle_render_pptx(payload: dict, send_message: bool = True):
                 logger.warning("[render_pptx] 等待前端上傳 timeout pptx_id=%s", pptx_id)
                 return "PPTX 渲染失敗：等待前端執行逾時（30 秒），請確認腳本是否正確或網路是否正常。"
             finally:
-                _pptx_upload_events.pop(pptx_id, None)
+                # 只釋放 upload event，保留 entry 讓 render_pptx 外層繼續等 png_event
+                entry = _pptx_upload_events.get(pptx_id)
+                if entry:
+                    entry.pop("event", None)
 
         # upload 成功後，組出後端存檔的 URL 並更新 pptx_history
         if user and conversation_id:

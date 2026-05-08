@@ -403,9 +403,9 @@ window.__pptxDone(prs);
 
 ## 視覺檢查（跑版偵測）
 
-`render_pptx` 執行後，後端會在對話的 `artifacts/` 目錄下產生每張投影片的預覽圖（PNG）。
+`render_pptx` 回傳時，後端 PNG 縮圖已生成完畢（LibreOffice 轉換在回傳前等待完成）。
 
-**命名規則**：檔名使用後端回傳的 `pptx_id`，格式為：
+**命名規則**：檔名使用回傳訊息中的 `pptx_id`，格式為：
 
 ```
 artifacts/pptx_<id>_slide_001.png
@@ -413,7 +413,9 @@ artifacts/pptx_<id>_slide_002.png
 ...
 ```
 
-`pptx_id` 會出現在 `render_pptx` 的回傳訊息中（格式：`[RENDER_PPTX_OK] pptx_id=pptx_a1b2c3d4`）。可直接用 `read_file` 開啟對應 PNG 進行視覺確認，無須使用者手動截圖：
+`pptx_id` 與總張數出現在 `render_pptx` 的回傳訊息開頭（格式：`[RENDER_PPTX_OK] pptx_id=pptx_a1b2c3d4 slide_count=N`）。
+
+可直接用 `read_file` 開啟對應 PNG 進行視覺確認，無須使用者手動截圖：
 
 ```
 read_file("artifacts/pptx_a1b2c3d4_slide_001.png")

@@ -66,7 +66,12 @@ _pending_forms: dict[str, dict] = {}
 _pending_renders: dict[str, dict] = {}
 
 # ── PPTX 上傳等待機制 ──
-# key: pptx_id（全域唯一），value: {"event": asyncio.Event, "result": {"success": bool, "error": str}}
+# key: pptx_id（全域唯一），value: {
+#   "event":      asyncio.Event(),   # .pptx 已存檔
+#   "png_event":  asyncio.Event(),   # PNG 全部生成完畢
+#   "result":     {"success": bool, "error": str},
+#   "png_result": {"success": bool, "error": str, "slide_count": int},
+# }
 # _handle_render_pptx 等待 event，/api/pptx-preview 存檔後 set；/api/pptx-upload-abort 失敗時 set
 _pptx_upload_events: dict[str, dict] = {}
 
@@ -1766,8 +1771,10 @@ async def render_pptx(
 
     # 預建上傳等待 event，/api/pptx-preview 存檔後 set
     _pptx_upload_events[pptx_id] = {
-        "event": asyncio.Event(),
-        "result": {"success": False, "error": ""},
+        "event":      asyncio.Event(),
+        "png_event":  asyncio.Event(),
+        "result":     {"success": False, "error": ""},
+        "png_result": {"success": False, "error": "", "slide_count": 0},
     }
 
     payload = {
@@ -1784,7 +1791,26 @@ async def render_pptx(
     render_error = await _handle_render_pptx(payload, send_message=True)
     if render_error:
         return render_error
-    return f"簡報「{safe_title}」已成功渲染，使用者可在右側 sidebar 預覽並下載 .pptx。"
+
+    # ── 等待 PNG 縮圖生成完畢（LibreOffice → PDF → PNG，約 30-60 秒）──
+    png_entry = _pptx_upload_events.get(pptx_id)
+    if png_entry and "png_event" in png_entry:
+        try:
+            await asyncio.wait_for(png_entry["png_event"].wait(), timeout=120.0)
+            if not png_entry["png_result"].get("success"):
+                err = png_entry["png_result"].get("error", "未知錯誤")
+                return f"PPTX 渲染失敗（PNG 轉換）：{err}"
+        except asyncio.TimeoutError:
+            return "PPTX 渲染失敗：PNG 轉換逾時（120 秒），請確認 LibreOffice 是否正常。"
+        finally:
+            _pptx_upload_events.pop(pptx_id, None)
+
+    slide_count = png_entry["png_result"].get("slide_count", 0) if png_entry else 0
+    return (
+        f"[RENDER_PPTX_OK] pptx_id={pptx_id} slide_count={slide_count}\n"
+        f"簡報「{safe_title}」已渲染完成，PNG 縮圖共 {slide_count} 張已就緒。\n"
+        f"可呼叫 read_file(\"artifacts/{pptx_id}_slide_001.png\") 進行視覺確認。"
+    )
 
 
 # ── 直接呼叫映射（供 buildin_tool_runner 使用，不走 MCP HTTP）──
