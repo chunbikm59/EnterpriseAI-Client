@@ -10,6 +10,7 @@ export default function PptxRenderer() {
   const initialStatus = script ? "loading" : "streaming";
   const [status,     setStatus]     = React.useState(initialStatus);
   const [pptxB64,    setPptxB64]    = React.useState(null);
+  const [pptxUrl,    setPptxUrl]    = React.useState(null);
   const [slideUrls,  setSlideUrls]  = React.useState([]);
   const [errMsg,     setErrMsg]     = React.useState("");
   const [downloaded, setDownloaded] = React.useState(false);
@@ -28,14 +29,14 @@ export default function PptxRenderer() {
   }
 
   // 上傳 base64 pptx 到後端取縮圖
-  async function fetchPreview(b64) {
+  async function fetchPreview(b64, layoutHints) {
     if (!convId) return;
     setStatus("rendering");
     try {
       const res = await fetch("/api/pptx-preview", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pptx_b64: b64, pptx_id: pptxId, conversation_id: convId }),
+        body: JSON.stringify({ pptx_b64: b64, pptx_id: pptxId, conversation_id: convId, layout_hints: layoutHints || [] }),
         credentials: "include",
       });
       if (!res.ok) {
@@ -46,6 +47,7 @@ export default function PptxRenderer() {
       }
       const data = await res.json();
       setSlideUrls(data.slide_urls || []);
+      if (data.pptx_url) setPptxUrl(data.pptx_url);
       setStatus("ready");
     } catch (e) {
       setErrMsg(`縮圖生成失敗：${String(e)}`);
@@ -53,29 +55,64 @@ export default function PptxRenderer() {
     }
   }
 
+  // 通知後端放棄等待（sendBeacon 在 unmount 後仍可靠送出）
+  function abortUpload(reason) {
+    if (!pptxId) return;
+    // sendBeacon 需明確傳 Blob 並指定 application/json，否則 FastAPI 收到 text/plain 會 422
+    const blob = new Blob(
+      [JSON.stringify({ pptx_id: pptxId, error: reason })],
+      { type: "application/json" }
+    );
+    navigator.sendBeacon("/api/pptx-upload-abort", blob);
+  }
+
   // 腳本執行
   React.useEffect(() => {
     if (!script) return;
     setStatus("loading");
     let cancelled = false;
+    let uploadDone = false;
+
+    // pptxgenjs 內部有 async 操作，錯誤會以 unhandledrejection 形式拋出，try/catch 捕捉不到
+    function onUnhandledRejection(ev) {
+      if (cancelled || uploadDone) return;
+      const reason = ev.reason ? String(ev.reason.message || ev.reason) : "未知錯誤";
+      console.error("[PptxRenderer] unhandledrejection:", reason);
+      ev.preventDefault();
+      setErrMsg(reason);
+      setStatus("error");
+      abortUpload(reason);
+    }
+    window.addEventListener("unhandledrejection", onUnhandledRejection);
 
     function runScript() {
       try {
         window.__pptxDone = async (prs) => {
           if (cancelled) return;
           try {
+            const layoutHints = Array.isArray(window.__pptxLayoutHints)
+              ? window.__pptxLayoutHints
+              : (prs.slides || []).map(s => s.__layoutHint || null);
+            window.__pptxLayoutHints = null;
             const b64 = await prs.write({ outputType: "base64" });
             if (!cancelled) {
               setPptxB64(b64);
-              await fetchPreview(b64);
+              await fetchPreview(b64, layoutHints);
+              uploadDone = true;
             }
           } catch (e) {
-            if (!cancelled) { setErrMsg(String(e)); setStatus("error"); }
+            if (!cancelled) {
+              setErrMsg(String(e)); setStatus("error");
+              abortUpload(String(e));
+            }
           }
         };
         new Function(script)();
       } catch (e) {
-        if (!cancelled) { setErrMsg(String(e)); setStatus("error"); }
+        if (!cancelled) {
+          setErrMsg(String(e)); setStatus("error");
+          abortUpload(String(e));
+        }
       }
     }
 
@@ -86,11 +123,18 @@ export default function PptxRenderer() {
       s.src = "https://cdn.jsdelivr.net/gh/gitbrent/pptxgenjs/dist/pptxgen.bundle.js";
       s.onload = () => { if (!cancelled) runScript(); };
       s.onerror = () => {
-        if (!cancelled) { setErrMsg("pptxgenjs CDN 載入失敗。"); setStatus("error"); }
+        if (!cancelled) {
+          setErrMsg("pptxgenjs CDN 載入失敗。"); setStatus("error");
+          abortUpload("CDN 載入失敗");
+        }
       };
       document.head.appendChild(s);
     }
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      window.removeEventListener("unhandledrejection", onUnhandledRejection);
+      if (!uploadDone) abortUpload("元件卸載");
+    };
   }, [pptxId, script]);
 
   // CSS 動畫（只注入一次）
@@ -106,15 +150,25 @@ export default function PptxRenderer() {
   }, []);
 
   function handleDownload() {
-    if (!pptxB64) return;
-    const bytes = atob(pptxB64);
-    const arr = new Uint8Array(bytes.length);
-    for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
-    const blob = new Blob([arr], { type: "application/vnd.openxmlformats-officedocument.presentationml.presentation" });
-    const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url; a.download = `${title}.pptx`; a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    a.download = `${title}.pptx`;
+    if (pptxUrl) {
+      // 套用模板後由後端存檔，直接下載後端的 pptx
+      a.href = pptxUrl;
+      a.click();
+    } else if (pptxB64) {
+      // 無模板，用前端原始 base64
+      const bytes = atob(pptxB64);
+      const arr = new Uint8Array(bytes.length);
+      for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+      const blob = new Blob([arr], { type: "application/vnd.openxmlformats-officedocument.presentationml.presentation" });
+      const url = URL.createObjectURL(blob);
+      a.href = url;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } else {
+      return;
+    }
     setDownloaded(true);
     setTimeout(() => setDownloaded(false), 3000);
   }
@@ -129,7 +183,7 @@ export default function PptxRenderer() {
     style:{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"6px 10px", borderBottom:"1px solid var(--border,#e5e7eb)", background:"var(--card,#fff)", flexShrink:0, gap:"8px" },
   },
     React.createElement("span", { style:{ fontSize:"12px", fontWeight:600, color:"var(--foreground,#111)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:"220px" } }, title),
-    (status==="ready"||status==="rendering") && pptxB64 &&
+    (status==="ready"||status==="rendering") && (pptxUrl || pptxB64) &&
       React.createElement("button", { onClick:handleDownload, style:dlBtn }, downloaded?"✓ 已下載":"⬇ 下載 .pptx"),
   );
 

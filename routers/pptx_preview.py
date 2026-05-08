@@ -24,11 +24,16 @@ _PROJECT_ROOT = pathlib.Path(__file__).parent.parent
 
 MAX_PPTX_BYTES = 20 * 1024 * 1024  # 20 MB
 
+# key: pptx_id, value: template 絕對路徑
+# 由 agent.py 的 _handle_render_pptx 在推送 sidebar 前寫入，pptx_preview 取用後刪除
+_template_registry: dict[str, str] = {}
+
 
 class PptxPreviewRequest(BaseModel):
     pptx_b64: str
     pptx_id: str
     conversation_id: str
+    layout_hints: list[str | None] = []
 
 
 @router.post("/api/pptx-preview")
@@ -56,12 +61,31 @@ async def pptx_preview(req: PptxPreviewRequest, request: Request):
     if len(pptx_bytes) > MAX_PPTX_BYTES:
         raise HTTPException(status_code=413, detail="File too large (max 20MB)")
 
+    # ── 套用企業模板（若有）──
+    template_abs_path = _template_registry.pop(req.pptx_id, "")
+    if template_abs_path:
+        from utils.pptx_template import apply_pptx_template
+        print(f"[pptx_preview] layout_hints received: {req.layout_hints}")
+        try:
+            pptx_bytes = await asyncio.to_thread(
+                apply_pptx_template, pptx_bytes, template_abs_path, req.layout_hints
+            )
+        except Exception as e:
+            print(f"[pptx_preview] apply_template failed: {e}, using original")
+
     # ── 存放路徑：user_profiles/{uid}/conversations/{conv_id}/artifacts/ ──
     artifacts_dir = _PROJECT_ROOT / "user_profiles" / safe_uid / "conversations" / safe_conv / "artifacts"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
     pptx_path = artifacts_dir / f"{safe_pptx_id}.pptx"
     pptx_path.write_bytes(pptx_bytes)
+
+    # ── 通知後端等待方：.pptx 已存檔，agent 可繼續（不等 LibreOffice）──
+    from mcp_servers.buildin import _pptx_upload_events
+    _upload_entry = _pptx_upload_events.get(req.pptx_id)
+    if _upload_entry:
+        _upload_entry["result"]["success"] = True
+        _upload_entry["event"].set()
 
     # ── LibreOffice 轉 PDF（暫存子目錄）──
     soffice = shutil.which("soffice") or shutil.which("soffice.bin")
@@ -117,5 +141,26 @@ async def pptx_preview(req: PptxPreviewRequest, request: Request):
         f"/api/user-files/user_profiles/{safe_uid}/conversations/{safe_conv}/artifacts/{p.name}"
         for p in png_paths
     ]
+    pptx_url = f"/api/user-files/user_profiles/{safe_uid}/conversations/{safe_conv}/artifacts/{safe_pptx_id}.pptx"
 
-    return JSONResponse({"slide_urls": slide_urls})
+    return JSONResponse({"slide_urls": slide_urls, "pptx_url": pptx_url})
+
+
+class PptxAbortRequest(BaseModel):
+    pptx_id: str
+    error: str = ""
+
+
+@router.post("/api/pptx-upload-abort")
+async def pptx_upload_abort(req: PptxAbortRequest):
+    """前端 pptxgenjs 執行失敗或元件 unmount 時，快速通知後端解除等待。
+    sendBeacon 無法帶 cookie，故此端點不驗證 JWT；
+    只觸發 in-memory event，不寫入任何檔案，無安全風險。
+    """
+    from mcp_servers.buildin import _pptx_upload_events
+    entry = _pptx_upload_events.get(req.pptx_id)
+    if entry:
+        entry["result"]["success"] = False
+        entry["result"]["error"] = req.error or "前端中止"
+        entry["event"].set()
+    return JSONResponse({"ok": True})

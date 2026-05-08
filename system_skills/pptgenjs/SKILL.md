@@ -326,10 +326,115 @@ slide.addChart(prs.charts.PIE, [{
 
 ---
 
+## 企業模板
+
+模板 `.pptx` 放於 `system_skills/pptgenjs/assets/templates/`，啟動此 skill 後即可從可用資源清單中看到路徑。
+
+### 套用方式
+
+在 `render_pptx` 中傳入 `template_path` 即可：
+
+```
+render_pptx(
+  pptx_script="...",
+  template_path="system_skills/pptgenjs/assets/templates/corporate.pptx",
+  title="Q2 業績報告",
+  slide_count=5
+)
+```
+
+後端會自動保留模板的 `slideMasters/`、`slideLayouts/`、`theme/`，並將生成的投影片內容套入。
+
+### 指定每頁的版面（Layout Hint）
+
+在 `pptx_script` 末尾（`window.__pptxDone(prs)` 之前）設定 `window.__pptxLayoutHints`，值為每張投影片對應版面**名稱字串**的陣列，後端會套用對應的版面樣式：
+
+```javascript
+let prs = new PptxGenJS();
+// ... 建立各頁投影片 ...
+let slide1 = prs.addSlide();
+let slide2 = prs.addSlide();
+let slide3 = prs.addSlide();
+
+// 必須在 __pptxDone 之前設定，順序與 addSlide 一致
+window.__pptxLayoutHints = [
+  "標題投影片",   // slide1：封面
+  "空白",         // slide2：空白內容頁
+  "標題及內容",   // slide3：結尾頁
+];
+window.__pptxDone(prs);
+```
+
+- 陣列長度不需與投影片數量完全一致，多餘的頁自動 fallback
+- 某頁填 `null` 或空字串：該頁自動依位置判斷（第 1 張與最後 1 張套 title 類版面，其餘套 blank/obj 類）
+- 填入不存在的名稱：自動 fallback 到位置判斷，不會報錯
+- 未設定 `window.__pptxLayoutHints`：全部依位置自動判斷
+
+### 可用版面名稱
+
+**default.pptx**
+
+| 版面名稱（`__layoutHint` 值） | 說明 |
+|---|---|
+| `標題投影片` | 封面頁 |
+| `標題及內容` | 標題 + 內容區塊 |
+| `章節標題` | 新章節標題頁 |
+| `兩個內容` | 左右並排兩欄內容 |
+| `比較` | 左右比較版面 |
+| `只有標題` | 僅顯示標題 |
+| `空白` | 全空白頁 |
+| `含輔助字幕的內容` | 內容 + 輔助字幕 |
+| `含輔助字幕的圖片` | 圖片 + 輔助字幕 |
+| `全景圖片 (含輔助字幕)` | 全景圖片 + 輔助字幕 |
+| `引述 (含輔助字幕)` | 引述文字 + 輔助字幕 |
+| `名片` | 名片樣式 |
+| `標題及直排文字` | 標題 + 直排文字 |
+| `直排標題及文字` | 直排標題 + 文字 |
+
+> **提示**：若不確定版面效果，可在生成後用 `read_file` 讀取 `artifacts/pptx_<id>_slide_001.png` 進行視覺確認，再針對性調整。
+
+### 注意事項
+
+- 若不指定 `template_path`，維持原有行為（使用 pptxgenjs 預設樣式，`__layoutHint` 無效）
+- 使用者若在自己的 skill 目錄下有自訂模板，也可以指定該路徑
+- **❌ 使用模板時不能設定 `slide.background`**（包括 `{ color: "..." }` 和 `{ path: "..." }`）。模板的每個 layout 已內建背景設計，slide 設 background 會覆蓋 layout 背景，導致模板視覺失效。
+
+---
+
+## 視覺檢查（跑版偵測）
+
+`render_pptx` 執行後，後端會在對話的 `artifacts/` 目錄下產生每張投影片的預覽圖（PNG）。
+
+**命名規則**：檔名使用後端回傳的 `pptx_id`，格式為：
+
+```
+artifacts/pptx_<id>_slide_001.png
+artifacts/pptx_<id>_slide_002.png
+...
+```
+
+`pptx_id` 會出現在 `render_pptx` 的回傳訊息中（格式：`[RENDER_PPTX_OK] pptx_id=pptx_a1b2c3d4`）。可直接用 `read_file` 開啟對應 PNG 進行視覺確認，無須使用者手動截圖：
+
+```
+read_file("artifacts/pptx_a1b2c3d4_slide_001.png")
+```
+
+當使用者回報**跑版、文字截斷、元素位置錯誤**等問題時，標準流程：
+
+1. 從 `[RENDER_PPTX_OK]` 訊息取得 `pptx_id`
+2. 呼叫 `read_file("artifacts/pptx_<id>_slide_NNN.png")` 確認版面
+3. 根據圖片判斷問題後針對性修正腳本，重新呼叫 `render_pptx`
+
+> 若不確定頁碼，可先用 `list_files("artifacts/")` 列出所有已生成的 PNG 檔名。
+
+---
+
 ## 工作流程
 
 1. 確認投影片數量、主題、需要呈現的資料
-2. 規劃每張投影片的目的（封面 / 摘要 / 圖表 / 結尾）
-3. 撰寫完整腳本，結尾呼叫 `window.__pptxDone(prs)`
-4. 呼叫 `render_pptx(pptx_script=..., title=..., slide_count=N)`
-5. 回傳一句話說明簡報內容，不需逐張解說
+2. 若使用者希望套用企業模板，從可用資源清單中取得模板路徑
+3. 規劃每張投影片的目的（封面 / 摘要 / 圖表 / 結尾）
+4. 撰寫完整腳本，結尾呼叫 `window.__pptxDone(prs)`
+5. 呼叫 `render_pptx(pptx_script=..., title=..., slide_count=N[, template_path=...])`
+6. 回傳一句話說明簡報內容，不需逐張解說
+7. 若使用者回報跑版問題，從 `[RENDER_PPTX_OK]` 取得 `pptx_id`，用 `read_file("artifacts/pptx_<id>_slide_NNN.png")` 進行視覺確認後修正

@@ -32,7 +32,7 @@ from utils.tool_formatter import (
 )
 from chainlit_app.file_handler import check_and_process_new_files
 from utils.signed_url import StreamingPathRewriter
-from mcp_servers.buildin import _pending_renders, _pending_pptx_renders, _pending_md_renders
+from mcp_servers.buildin import _pending_renders, _pending_md_renders, _pptx_upload_events
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +173,12 @@ async def _handle_render_pptx(payload: dict, send_message: bool = True):
     title       = payload["title"]
     slide_count = payload.get("slide_count", 1)
 
+    # 若有模板，寫入 registry 供 /api/pptx-preview 套用
+    template_abs_path = payload.get("template_abs_path", "")
+    if template_abs_path:
+        from routers.pptx_preview import _template_registry
+        _template_registry[pptx_id] = template_abs_path
+
     # 儲存至 session pptx_history（供 reopen_artifact 重開使用）
     if send_message:
         pptx_history: list = cl.user_session.get("pptx_history", [])
@@ -215,6 +221,25 @@ async def _handle_render_pptx(payload: dict, send_message: bool = True):
     )
     await cl.ElementSidebar.set_title(f"簡報 — {title}")
     await cl.ElementSidebar.set_elements([elem])
+
+    # ── 等待前端完成 pptxgenjs 執行並上傳 .pptx（僅第一次渲染，reopen 路徑跳過）──
+    if send_message:
+        upload_entry = _pptx_upload_events.get(pptx_id)
+        if upload_entry:
+            try:
+                await asyncio.wait_for(upload_entry["event"].wait(), timeout=30.0)
+                if not upload_entry["result"]["success"]:
+                    error_msg = upload_entry["result"].get("error") or "前端中止"
+                    logger.warning(
+                        "[render_pptx] 前端上傳失敗 pptx_id=%s error=%s",
+                        pptx_id, error_msg,
+                    )
+                    return f"PPTX 渲染失敗：{error_msg}"
+            except asyncio.TimeoutError:
+                logger.warning("[render_pptx] 等待前端上傳 timeout pptx_id=%s", pptx_id)
+                return "PPTX 渲染失敗：等待前端執行逾時（30 秒），請確認腳本是否正確或網路是否正常。"
+            finally:
+                _pptx_upload_events.pop(pptx_id, None)
 
     if not send_message:
         return
@@ -843,12 +868,6 @@ async def run(message_history, initial_msg=None):
                     if pending:
                         await _handle_render_html(pending)
 
-                # render_pptx 特殊後處理：取出 pending render payload 並更新 sidebar
-                if tool_name == "render_pptx" and "[RENDER_PPTX_OK]" in str(tool_result_content):
-                    session_id = cl.user_session.get("id")
-                    pending = _pending_pptx_renders.pop(session_id, None)
-                    if pending:
-                        await _handle_render_pptx(pending)
 
                 # write_file .md 特殊後處理：取出 pending md render payload 並更新 sidebar
                 if tool_name == "write_file" and "[RENDER_MARKDOWN_OK]" in str(tool_result_content):

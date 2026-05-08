@@ -65,9 +65,10 @@ _pending_forms: dict[str, dict] = {}
 # key: Chainlit session_id，value: {"artifact_id": str, "html_code": str, "title": str}
 _pending_renders: dict[str, dict] = {}
 
-# ── PPTX Render 暫存機制 ──
-# key: Chainlit session_id，value: {"pptx_id": str, "pptx_script": str, "title": str, "slide_count": int}
-_pending_pptx_renders: dict[str, dict] = {}
+# ── PPTX 上傳等待機制 ──
+# key: pptx_id（全域唯一），value: {"event": asyncio.Event, "result": {"success": bool, "error": str}}
+# _handle_render_pptx 等待 event，/api/pptx-preview 存檔後 set；/api/pptx-upload-abort 失敗時 set
+_pptx_upload_events: dict[str, dict] = {}
 
 # ── Markdown Render 暫存機制 ──
 # key: Chainlit session_id，value: {"md_id": str, "markdown_content": str, "title": str, "file_path": str}
@@ -117,6 +118,44 @@ def _check_path_in_allowed_roots(abs_path: str, allowed_roots: list[str]) -> boo
         for r in allowed_roots
     )
 
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+def _resolve_file_path(path: str, base_folder: str, strip_trailing_slash: bool = False) -> str:
+    """將輸入路徑正規化並解析為絕對路徑。
+    - 處理反斜線、前導斜線
+    - 若為相對路徑，以 base_folder 為 base
+    - 若為絕對路徑，直接 realpath
+    回傳值已經過 os.path.realpath 解析。
+    """
+    norm = path.replace("\\", "/").lstrip("/")
+    if strip_trailing_slash:
+        norm = norm.rstrip("/")
+    if os.path.isabs(path):
+        return os.path.realpath(path)
+    return os.path.realpath(os.path.join(base_folder, norm))
+
+def _resolve_user_path(path: str, user_id: str, conversation_folder: str) -> str:
+    """解析支援前綴簡寫的使用者路徑為絕對路徑。
+    支援前綴：memory/、skills/、system_skills/、user_profiles/，其餘以 conversation_folder 為 base。
+    回傳值已經過 os.path.realpath 解析。
+    """
+    norm = path.replace("\\", "/").lstrip("/")
+    if os.path.isabs(path):
+        return os.path.realpath(path)
+    if norm.startswith("memory/"):
+        return os.path.realpath(os.path.join(
+            get_user_memory_dir(user_id), norm[len("memory/"):]
+        ))
+    if norm.startswith("skills/"):
+        return os.path.realpath(os.path.join(
+            get_user_skills_dir(user_id), norm[len("skills/"):]
+        ))
+    if norm.startswith("system_skills/"):
+        return os.path.realpath(os.path.join(_PROJECT_ROOT, norm))
+    if norm.startswith("user_profiles/"):
+        return os.path.realpath(os.path.join(_PROJECT_ROOT, norm))
+    return os.path.realpath(os.path.join(conversation_folder, norm))
+
 @mcp.tool()
 async def list_files(
     directory: str = Field(default="conversation", description=(
@@ -146,9 +185,7 @@ async def transcription(
     '''將本次對話資料夾中的影音檔轉錄成文字稿'''
     root_folder = get_conversation_folder()
 
-    # 構建完整檔案路徑，並做 realpath 驗證防路徑穿越
-    file_path = os.path.join(root_folder, filename)
-    abs_path = os.path.realpath(file_path)
+    abs_path = _resolve_file_path(filename, root_folder)
     if not _check_path_in_allowed_roots(abs_path, [os.path.realpath(root_folder)]):
         return "存取拒絕：只能存取對話資料夾中的檔案。"
 
@@ -246,21 +283,11 @@ async def read_file(
     user_id = ctx_data["user_id"]
     conversation_folder = get_conversation_folder()
 
-    norm = filename.replace("\\", "/").lstrip("/")
-    _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-    if norm.startswith("memory/"):
-        # 簡短格式 memory/filename.md → 自動對應至當前使用者的 memory 目錄
-        memory_dir_abs = os.path.realpath(get_user_memory_dir(user_id))
-        file_path = os.path.join(memory_dir_abs, norm[len("memory/"):])
-    elif norm.startswith("user_profiles/"):
-        file_path = os.path.join(_PROJECT_ROOT, norm)  # 明確以專案根目錄為 base
-    else:
-        file_path = os.path.join(conversation_folder, filename)
-
-    # 存取控制：防路徑穿越 & 跨用戶（邏輯不變）
-    abs_path = os.path.realpath(file_path)
-    allowed_roots = [os.path.realpath(conversation_folder)]
+    abs_path = _resolve_user_path(filename, user_id, conversation_folder)
+    allowed_roots = [
+        os.path.realpath(conversation_folder),
+        os.path.realpath(os.path.join(_PROJECT_ROOT, "system_skills")),
+    ]
     if user_id:
         allowed_roots.append(os.path.realpath(get_user_profile_dir(user_id)))
 
@@ -787,10 +814,7 @@ async def http_request(
         for field_name, field_value in parsed_form.items():
             if field_name == "file":
                 candidate = str(field_value)
-                if os.path.isabs(candidate):
-                    src_abs = os.path.realpath(candidate)
-                else:
-                    src_abs = os.path.realpath(os.path.join(conversation_folder, candidate))
+                src_abs = _resolve_file_path(candidate, conversation_folder)
                 if not _check_path_in_allowed_roots(src_abs, allowed_roots):
                     return "存取拒絕：file 的檔案路徑只能指向自己的對話資料夾或 user_profiles 目錄。"
                 if not os.path.isfile(src_abs):
@@ -895,20 +919,22 @@ async def activate_skill(
     skill_map = {s.name: s for s in skills}
     skill = skill_map[skill_name]
 
-    # 列出技能資料夾中的資源檔案（scripts/, references/, assets/）
+    # 列出技能資料夾中的資源檔案（scripts/, references/, assets/，遞迴掃描子目錄）
     resources = []
     truncated = False
     for subdir in ("scripts", "references", "assets"):
         subdir_path = os.path.join(skill.skill_dir, subdir)
         if os.path.isdir(subdir_path):
-            for fname in os.listdir(subdir_path):
-                if os.path.isfile(os.path.join(subdir_path, fname)):
+            for dirpath, _dirnames, filenames in os.walk(subdir_path):
+                for fname in filenames:
                     if len(resources) >= RESOURCES_MAX:
                         truncated = True
                         break
-                    abs_file = os.path.join(subdir_path, fname)
+                    abs_file = os.path.join(dirpath, fname)
                     rel_path = os.path.relpath(abs_file, _project_root).replace("\\", "/")
                     resources.append(rel_path)
+                if truncated:
+                    break
         if truncated:
             break
 
@@ -1111,7 +1137,6 @@ async def write_file(
     session_id = ctx_data.get("session_id", "")
     conversation_folder = get_conversation_folder()
 
-    norm = path.replace("\\", "/").lstrip("/")
     memory_dir_abs = os.path.realpath(get_user_memory_dir(user_id))
     profile_dir_abs = os.path.realpath(get_user_profile_dir(user_id))
     conv_abs = os.path.realpath(conversation_folder)
@@ -1119,24 +1144,7 @@ async def write_file(
     artifacts_dir = get_conversation_artifacts_dir(conversation_folder)
     artifacts_abs = os.path.realpath(artifacts_dir)
 
-    # 解析輸入路徑為絕對路徑
-    if os.path.isabs(path):
-        target_abs = os.path.realpath(path)
-    elif norm.startswith("memory/"):
-        # 簡短格式 memory/filename.md → 自動對應至當前使用者的 memory 目錄
-        target_abs = os.path.realpath(os.path.join(memory_dir_abs, norm[len("memory/"):]))
-    elif norm.startswith("skills/"):
-        # 簡短格式 skills/{name}/... → 自動對應至當前使用者的 skills 目錄
-        target_abs = os.path.realpath(os.path.join(
-            get_user_skills_dir(user_id), norm[len("skills/"):]
-        ))
-    elif norm.startswith("user_profiles/"):
-        target_abs = os.path.realpath(os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), norm
-        ))
-    else:
-        # 路徑以 conversation_folder 為 base，artifacts/xxx 會正確解析至 artifacts/ 子目錄
-        target_abs = os.path.realpath(os.path.join(conversation_folder, norm))
+    target_abs = _resolve_user_path(path, user_id, conversation_folder)
 
     # Memory 目錄寫入
     if target_abs.startswith(memory_dir_abs + os.sep) or target_abs == memory_dir_abs:
@@ -1150,11 +1158,7 @@ async def write_file(
     if target_abs.startswith(user_skills_abs + os.sep):
         return await _write_skill_file(target_abs, user_skills_abs, content, session_id, user_id)
 
-    # 跨用戶存取保護：只能存取自己的 profile 目錄
-    if "user_profiles" in norm and not target_abs.startswith(profile_dir_abs + os.sep):
-        return "存取拒絕：不能存取其他使用者的目錄。"
-
-    # 對話資料夾寫入（限 artifacts/ 子目錄）
+    # 對話資料夾寫入（限 artifacts/ 子目錄）；profile 目錄下非 skills 的路徑同樣拒絕
     if not target_abs.startswith(artifacts_abs + os.sep):
         return "存取拒絕：只能寫入自己的對話 artifacts/ 資料夾或記憶目錄。"
     os.makedirs(os.path.dirname(target_abs), exist_ok=True)
@@ -1194,22 +1198,11 @@ async def delete_file(
     user_id = ctx_data["user_id"]
     conversation_folder = get_conversation_folder()
 
-    norm = path.replace("\\", "/").lstrip("/").rstrip("/")
     memory_dir_abs = os.path.realpath(get_user_memory_dir(user_id))
     profile_dir_abs = os.path.realpath(get_user_profile_dir(user_id))
     conv_abs = os.path.realpath(conversation_folder)
 
-    # 解析輸入路徑為絕對路徑
-    if os.path.isabs(path):
-        target_abs = os.path.realpath(path)
-    elif norm.startswith("memory/"):
-        target_abs = os.path.realpath(os.path.join(memory_dir_abs, norm[len("memory/"):]))
-    elif norm.startswith("user_profiles/"):
-        target_abs = os.path.realpath(os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), norm
-        ))
-    else:
-        target_abs = os.path.realpath(os.path.join(conversation_folder, norm))
+    target_abs = _resolve_user_path(path, user_id, conversation_folder)
 
     # Memory 目錄（只支援檔案，不支援刪整個 memory 目錄）
     if target_abs.startswith(memory_dir_abs + os.sep) or target_abs == memory_dir_abs:
@@ -1224,11 +1217,7 @@ async def delete_file(
         os.remove(filepath)
         return f"已刪除記憶檔案：{filename}（請記得更新 MEMORY.md）"
 
-    # 跨用戶存取保護：只能存取自己的 profile 目錄
-    if "user_profiles" in norm and not target_abs.startswith(profile_dir_abs + os.sep):
-        return "存取拒絕：不能存取其他使用者的目錄。"
-
-    # Profile 目錄下的刪除（skills 等）
+    # Profile 目錄下的刪除（skills 等）；不在自己 profile 範圍內一律拒絕
     if target_abs.startswith(profile_dir_abs + os.sep):
         if not os.path.exists(target_abs):
             return f"不存在：{os.path.basename(target_abs)}"
@@ -1280,15 +1269,8 @@ async def capture_video_frames(
     root_folder = get_conversation_folder()
     artifacts_dir = get_conversation_artifacts_dir(root_folder)
 
-    # 解析影片路徑
-    norm_video = video_path.replace("\\", "/").lstrip("/")
-    if os.path.isabs(video_path):
-        video_abs = os.path.realpath(video_path)
-    else:
-        video_abs = os.path.realpath(os.path.join(root_folder, norm_video))
-
-    allowed_roots = [os.path.realpath(root_folder)]
-    if not _check_path_in_allowed_roots(video_abs, allowed_roots):
+    video_abs = _resolve_file_path(video_path, root_folder)
+    if not _check_path_in_allowed_roots(video_abs, [os.path.realpath(root_folder)]):
         return "存取拒絕：只能存取對話資料夾中的影片。"
 
     if not os.path.isfile(video_abs):
@@ -1375,12 +1357,7 @@ async def capture_ppt_slides(
     root_folder = get_conversation_folder()
     artifacts_dir = get_conversation_artifacts_dir(root_folder)
 
-    norm_ppt = ppt_path.replace("\\", "/").lstrip("/")
-    if os.path.isabs(ppt_path):
-        ppt_abs = os.path.realpath(ppt_path)
-    else:
-        ppt_abs = os.path.realpath(os.path.join(root_folder, norm_ppt))
-
+    ppt_abs = _resolve_file_path(ppt_path, root_folder)
     if not _check_path_in_allowed_roots(ppt_abs, [os.path.realpath(root_folder)]):
         return "存取拒絕：只能存取對話資料夾中的 PPT 檔案。"
 
@@ -1585,6 +1562,7 @@ async def ask_user_question(
 @mcp.tool()
 async def render_html(
     html_code: str = Field(
+        default="",
         description=(
             "要渲染的完整 HTML 文件字串。必須是可獨立執行的自包含文件，例如：\n"
             "<!DOCTYPE html><html><head>...</head><body>...</body></html>\n"
@@ -1604,7 +1582,18 @@ async def render_html(
             "嵌入使用者上傳的影片（.mp4 / .mkv / .webm 等）：\n"
             "- 使用 <video> 標籤，src 寫相對路徑 ../uploads/影片檔名\n"
             "- 例如：<video src=\"../uploads/video.mkv\" controls style=\"width:100%\"></video>\n"
-            "- 系統會自動將相對路徑轉換為完整 API URL"
+            "- 系統會自動將相對路徑轉換為完整 API URL\n"
+            "與 file_path 二擇一，不可同時為空。"
+        )
+    ),
+    file_path: str = Field(
+        default="",
+        description=(
+            "已存在的 HTML 檔案路徑（與 html_code 二擇一）。\n"
+            "適合 agent 先用 write_file 寫好 HTML 後，直接指定路徑渲染，省去重複傳輸。\n"
+            "- 相對路徑：以對話資料夾為 base（例如 artifacts/demo.html）\n"
+            "- 絕對路徑：需在自己的對話資料夾或使用者 profile 目錄內\n"
+            "只接受 .html 檔案，大小限制 500KB。"
         )
     ),
     title: str = Field(
@@ -1621,10 +1610,35 @@ async def render_html(
     if not session_id:
         return "錯誤：無法取得 session_id，render_html 只能在 Chainlit session 中使用。"
 
-    if not html_code or not html_code.strip():
-        return "錯誤：html_code 不能為空。"
-
     MAX_HTML_SIZE = 500 * 1024  # 500KB
+
+    # 若提供 file_path，讀取檔案內容覆蓋 html_code
+    if file_path and not html_code.strip():
+        user_id = ctx.get("user_id", "")
+        conv_folder = get_conversation_folder()
+
+        abs_path = _resolve_file_path(file_path, conv_folder)
+        allowed_roots = [os.path.realpath(conv_folder)]
+        if user_id:
+            allowed_roots.append(os.path.realpath(get_user_profile_dir(user_id)))
+        if not _check_path_in_allowed_roots(abs_path, allowed_roots):
+            return "存取拒絕：只能讀取自己的對話資料夾或使用者目錄。"
+
+        if not os.path.isfile(abs_path):
+            return f"檔案不存在：{file_path}"
+        if not abs_path.lower().endswith(".html"):
+            return f"不支援的格式：只接受 .html 檔案。"
+
+        file_size = os.path.getsize(abs_path)
+        if file_size > MAX_HTML_SIZE:
+            return f"檔案過大（{file_size / 1024:.1f} KB），超過 500KB 上限。"
+
+        async with aiofiles.open(abs_path, "r", encoding="utf-8") as f:
+            html_code = await f.read()
+
+    if not html_code or not html_code.strip():
+        return "錯誤：html_code 與 file_path 不能同時為空，請擇一提供。"
+
     if len(html_code.encode("utf-8")) > MAX_HTML_SIZE:
         return "錯誤：HTML 內容超過 500KB 上限，請精簡後重試。"
 
@@ -1701,6 +1715,17 @@ async def render_pptx(
         default=1,
         description="預計的投影片張數（用於 sidebar 佔位顯示）。"
     ),
+    template_path: str = Field(
+        default="",
+        description=(
+            "企業模板 .pptx 的路徑（相對於專案根目錄，選填）。\n"
+            "啟用 pptgenjs skill 後，從可用資源清單中取得模板路徑，\n"
+            "例如：system_skills/pptgenjs/assets/templates/corporate.pptx\n"
+            "後端會保留模板的 slideMasters/、slideLayouts/、theme/，\n"
+            "並將生成的投影片內容套入。不需要修改 pptx_script 的寫法。\n"
+            "留空則使用 pptxgenjs 預設樣式，不套用模板。"
+        )
+    ),
 ) -> str:
     """在 Chainlit sidebar 中執行 pptxgenjs 腳本並顯示投影片預覽，提供 .pptx 下載按鈕。
     使用 CDN 版本的 pptxgenjs（https://cdn.jsdelivr.net/gh/gitbrent/pptxgenjs/dist/pptxgen.bundle.js）。
@@ -1708,6 +1733,7 @@ async def render_pptx(
     """
     ctx = _session_ctx.get()
     session_id = ctx.get("session_id", "")
+    user_id = ctx.get("user_id", "")
     if not session_id:
         return "錯誤：無法取得 session_id，render_pptx 只能在 Chainlit session 中使用。"
 
@@ -1718,17 +1744,47 @@ async def render_pptx(
     if len(pptx_script.encode("utf-8")) > MAX_SCRIPT_SIZE:
         return "錯誤：pptx_script 超過 200KB 上限，請精簡腳本。"
 
+    # 驗證 template_path（只允許 system_skills/ 或使用者自己的 skills/ 目錄）
+    template_abs_path = ""
+    if template_path and template_path.strip():
+        norm = template_path.replace("\\", "/").lstrip("/")
+        _sys_skills_abs = os.path.realpath(os.path.join(_PROJECT_ROOT, "system_skills"))
+        _user_skills_abs = (
+            os.path.realpath(get_user_skills_dir(user_id)) if user_id else ""
+        )
+        candidate = os.path.realpath(os.path.join(_PROJECT_ROOT, norm))
+        in_sys  = candidate.startswith(_sys_skills_abs + os.sep)
+        in_user = bool(_user_skills_abs and candidate.startswith(_user_skills_abs + os.sep))
+        if not (in_sys or in_user):
+            return "存取拒絕：template_path 只能指向 system_skills/ 或使用者自己的 skills/ 目錄。"
+        if not (os.path.isfile(candidate) and candidate.lower().endswith(".pptx")):
+            return f"錯誤：模板檔案不存在或非 .pptx：{template_path}"
+        template_abs_path = candidate
+
     pptx_id = f"pptx_{uuid.uuid4().hex[:8]}"
     safe_title = (title or "簡報").strip()
 
-    _pending_pptx_renders[session_id] = {
+    # 預建上傳等待 event，/api/pptx-preview 存檔後 set
+    _pptx_upload_events[pptx_id] = {
+        "event": asyncio.Event(),
+        "result": {"success": False, "error": ""},
+    }
+
+    payload = {
         "pptx_id": pptx_id,
         "pptx_script": pptx_script,
+        "template_abs_path": template_abs_path,
         "title": safe_title,
         "slide_count": max(1, int(slide_count)),
     }
 
-    return f"[RENDER_PPTX_OK] pptx_id={pptx_id} title={safe_title}"
+    # ── 推送 sidebar 並等待前端執行結果 ──
+    import chainlit as cl
+    from chainlit_app.agent import _handle_render_pptx
+    render_error = await _handle_render_pptx(payload, send_message=True)
+    if render_error:
+        return render_error
+    return f"簡報「{safe_title}」已成功渲染，使用者可在右側 sidebar 預覽並下載 .pptx。"
 
 
 # ── 直接呼叫映射（供 buildin_tool_runner 使用，不走 MCP HTTP）──
