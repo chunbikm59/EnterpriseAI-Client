@@ -2045,7 +2045,7 @@ async def render_pptx(
             "  let slide = prs.addSlide();\n"
             "  slide.addText('Hello', {x:1, y:1, fontSize:36});\n"
             "  window.__pptxDone(prs);\n"
-            "只接受 .js 檔案，大小限制 200KB。"
+            "只接受 .js 檔案。"
         )
     ),
     title: str = Field(
@@ -2082,8 +2082,6 @@ async def render_pptx(
     if not script_path or not script_path.strip():
         return "錯誤：script_path 不能為空，請先用 write_file 寫入 .js 腳本後再呼叫。"
 
-    MAX_SCRIPT_SIZE = 200 * 1024  # 200KB
-
     conv_folder = get_conversation_folder()
     abs_script_path = _resolve_file_path(script_path, conv_folder)
     allowed_roots = [os.path.realpath(conv_folder)]
@@ -2096,10 +2094,6 @@ async def render_pptx(
         return f"檔案不存在：{script_path}"
     if not abs_script_path.lower().endswith(".js"):
         return "不支援的格式：只接受 .js 檔案。"
-
-    script_size = os.path.getsize(abs_script_path)
-    if script_size > MAX_SCRIPT_SIZE:
-        return f"檔案過大（{script_size / 1024:.1f} KB），超過 200KB 上限。"
 
     async with aiofiles.open(abs_script_path, "r", encoding="utf-8") as f:
         pptx_script = await f.read()
