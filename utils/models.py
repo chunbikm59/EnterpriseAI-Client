@@ -53,3 +53,15 @@ class PublishedArtifact(Base):
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
     html_file: Mapped[str] = mapped_column(String(64), nullable=False)
     conversation_folder: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+
+class SharedThread(Base):
+    """分享對話的 share token 記錄。"""
+
+    __tablename__ = "shared_threads"
+
+    token: Mapped[str] = mapped_column(String(32), primary_key=True)
+    thread_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    conversation_folder: Mapped[str] = mapped_column(String(512), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)

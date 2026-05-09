@@ -66,6 +66,18 @@ async def on_reopen_artifact(action: cl.Action):
 
     # ── Markdown artifact ──
     if md_id:
+        # 分享情境：on_shared_thread_view hook 已將內容直接注入 payload
+        markdown_content_inline = action.payload.get("markdown_content_inline", "")
+        if markdown_content_inline:
+            payload = {
+                "md_id":            md_id,
+                "markdown_content": markdown_content_inline,
+                "title":            action.payload.get("title", md_id),
+                "file_path":        "",
+            }
+            await _handle_render_markdown(payload, send_message=False)
+            return
+
         md_history: list = cl.user_session.get("md_history", [])
         payload = next((h for h in md_history if h["md_id"] == md_id), None)
 
@@ -94,8 +106,10 @@ async def on_reopen_artifact(action: cl.Action):
 
         # 若 chip_props 中已有 URL（JSONL 持久化路徑），直接推送靜態 element，不跑腳本
         if initial_pptx_url:
+            import uuid as _uuid
             elem = cl.CustomElement(
                 name="PptxRenderer",
+                id=f"pptx-{pptx_id}-{_uuid.uuid4().hex[:8]}",
                 props={
                     "pptx_id":            pptx_id,
                     "title":              title,
@@ -105,7 +119,7 @@ async def on_reopen_artifact(action: cl.Action):
                 display="side",
             )
             await cl.ElementSidebar.set_title(f"簡報 — {title}")
-            await cl.ElementSidebar.set_elements([elem])
+            await cl.ElementSidebar.set_elements([elem], key=elem.id)
             return
 
         # Fallback：URL 不存在（舊版 JSONL 沒有記錄），從 session history 或磁碟讀腳本
@@ -130,6 +144,17 @@ async def on_reopen_artifact(action: cl.Action):
 
     # ── HTML artifact ──
     if not artifact_id:
+        return
+
+    # 分享情境：on_shared_thread_view hook 已將 HTML 內容直接注入 payload
+    html_code_inline = action.payload.get("html_code_inline", "")
+    if html_code_inline:
+        payload = {
+            "artifact_id": artifact_id,
+            "html_code":   html_code_inline,
+            "title":       action.payload.get("title", artifact_id),
+        }
+        await _handle_render_html(payload, send_message=False)
         return
 
     # 先從 session history 找（正常對話中）

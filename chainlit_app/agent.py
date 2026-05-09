@@ -114,7 +114,7 @@ async def _handle_render_html(payload: dict, send_message: bool = True):
         display="side",
     )
     await cl.ElementSidebar.set_title(f"Artifacts — {title}")
-    await cl.ElementSidebar.set_elements([elem])
+    await cl.ElementSidebar.set_elements([elem], key=elem.id)
 
     if not send_message:
         return
@@ -213,7 +213,7 @@ async def _handle_render_pptx(payload: dict, send_message: bool = True):
         display="side",
     )
     await cl.ElementSidebar.set_title(f"簡報 — {title}")
-    await cl.ElementSidebar.set_elements([elem])
+    await cl.ElementSidebar.set_elements([elem], key=elem.id)
 
     # ── 等待前端完成 pptxgenjs 執行並上傳 .pptx（僅第一次渲染，reopen 路徑跳過）──
     if send_message:
@@ -324,7 +324,7 @@ async def _handle_render_markdown(payload: dict, send_message: bool = True):
         display="side",
     )
     await cl.ElementSidebar.set_title(f"文件 — {title}")
-    await cl.ElementSidebar.set_elements([elem])
+    await cl.ElementSidebar.set_elements([elem], key=elem.id)
 
 async def _persist_entry(role, content, tool_calls=None, tool_call_id=None, image_paths=None):
     """持久化一條對話記錄到 JSONL，若未啟用 session history 則直接返回。"""

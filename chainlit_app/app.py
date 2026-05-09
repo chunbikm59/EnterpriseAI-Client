@@ -72,6 +72,105 @@ async def _setup_modes():
         ))
     await cl.context.emitter.set_modes(modes)
 
+@cl.on_shared_thread_view
+async def on_shared_thread_view(thread, current_user: cl.User) -> bool:
+    """分享對話視圖 hook：重寫 elements URL 為公開路徑，並為 ArtifactChip 補充 inline 資料。"""
+    import re
+    from utils.share_manager import get_or_create_share_token
+
+    thread_id = thread.get("id", "")
+    user_id = thread.get("userIdentifier", "")
+    if not thread_id or not user_id:
+        return True
+
+    conv_folder = os.path.join(_PROJECT_ROOT, "user_profiles", user_id, "conversations", thread_id)
+    if not os.path.isdir(conv_folder):
+        return True
+
+    share_token = await asyncio.to_thread(
+        get_or_create_share_token, thread_id, user_id, conv_folder
+    )
+
+    base_url = os.getenv("CHAINLIT_URL", "http://localhost:8000")
+    share_base = f"{base_url}/share/{share_token}/files"
+    # 兩種格式都需支援：
+    #   帶 host：http://localhost:8000/api/user-files/...  （user_file_url() 產生）
+    #   相對路徑：/api/user-files/...                      （rewrite_artifact_paths() 產生）
+    _user_files_abs = f"{base_url}/api/user-files"
+    _user_files_rel = "/api/user-files"
+
+    def _replace_url(url: str) -> str:
+        if not url:
+            return url
+        if url.startswith(_user_files_abs):
+            path_part = url[len(_user_files_abs):].lstrip("/")
+        elif url.startswith(_user_files_rel):
+            path_part = url[len(_user_files_rel):].lstrip("/")
+        else:
+            return url
+        for pfx in ("uploads/", "artifacts/"):
+            idx = path_part.find(pfx)
+            if idx != -1:
+                return f"{share_base}/{path_part[idx:]}"
+        return url
+
+    # 重寫 elements 的 url 欄位
+    for elem in thread.get("elements") or []:
+        if elem.get("url"):
+            elem["url"] = _replace_url(elem["url"])
+
+        # ArtifactChip：補充 inline 資料讓 reopen_artifact 可以跨用戶使用
+        if elem.get("type") == "custom" and elem.get("name") == "ArtifactChip":
+            props = elem.get("props") or {}
+            payload = props.get("payload") or {}
+
+            artifact_id = payload.get("artifact_id")
+            pptx_id = payload.get("pptx_id")
+            md_id = payload.get("md_id")
+
+            if artifact_id:
+                html_path = os.path.join(
+                    get_conversation_artifacts_dir(conv_folder),
+                    f"artifact_{artifact_id}.html",
+                )
+                if os.path.exists(html_path):
+                    try:
+                        with open(html_path, encoding="utf-8") as f:
+                            payload["html_code_inline"] = f.read()
+                        elem["props"] = {**props, "payload": payload}
+                    except OSError:
+                        pass
+
+            elif pptx_id:
+                if payload.get("initial_pptx_url"):
+                    payload["initial_pptx_url"] = _replace_url(payload["initial_pptx_url"])
+                slide_urls = payload.get("initial_slide_urls")
+                if isinstance(slide_urls, list):
+                    payload["initial_slide_urls"] = [_replace_url(u) for u in slide_urls]
+                if "initial_pptx_url" in payload or "initial_slide_urls" in payload:
+                    elem["props"] = {**props, "payload": payload}
+
+            elif md_id:
+                file_path = payload.get("file_path", "")
+                if file_path and os.path.exists(file_path):
+                    try:
+                        with open(file_path, encoding="utf-8") as f:
+                            payload["markdown_content_inline"] = f.read()
+                        elem["props"] = {**props, "payload": payload}
+                    except OSError:
+                        pass
+
+    # 重寫 steps output 中的 Markdown 內嵌圖片 URL（帶 host 和相對路徑兩種格式）
+    _url_pattern = re.compile(
+        r'(?:' + re.escape(_user_files_abs) + r'|' + re.escape(_user_files_rel) + r')' +
+        r'/[^\s\)"\'>\]]+'
+    )
+    for step in thread.get("steps") or []:
+        output = step.get("output", "")
+        if output and (_user_files_abs in output or _user_files_rel in output):
+            step["output"] = _url_pattern.sub(lambda m: _replace_url(m.group(0)), output)
+
+    return True
 
 @cl.on_chat_resume
 async def on_chat_resume(thread):
@@ -131,14 +230,14 @@ def oauth_callback(
 ) -> Optional[cl.User]:
   name = raw_user_data.get("name")
   if name:
-    default_user.display_name = 'tester'
+    default_user.display_name = name
   return default_user
 
 
 @cl.on_chat_start
 async def start():
     userinfo = cl.user_session.get('user')
-    await cl.Message(content=f'### 你好 {userinfo.identifier}，歡迎回來!　ദ്ദി(˵ •̀ ᴗ - ˵ ) ✧').send()
+    await cl.Message(content=f'### 你好 {userinfo.metadata['name']}，歡迎回來!　ദ്ദി(˵ •̀ ᴗ - ˵ ) ✧').send()
     await _init_session_state(userinfo)
     await _setup_modes()
 
