@@ -19,7 +19,7 @@ from utils.context_compressor import (
     compress_conversation,
     should_compress,
 )
-from utils.file_handler import get_files_state, _resize_image_bytes
+from utils.file_handler import get_files_state, _resize_image_bytes, _get_text_file_info
 from utils.llm_client import get_llm_client, get_model_config
 from utils.memory_extractor import extract_memories_background
 from utils.memory_injection import consume_memory_prefetch
@@ -678,19 +678,21 @@ async def run(message_history, initial_msg=None):
                                         {"elements": [_html_stream_elem.to_dict()], "key": f"html_stream_{_cur_arg_len}"},
                                     )
 
-                            # write_file .md 串流進度：每 150 字元節流推送一次 partial 給前端
+                            # write_file 純文字串流進度：每 150 字元節流推送一次 partial 給前端
                             if tool_calls[tc_id]["name"] == "write_file":
                                 _cur_arg_len = len(tool_calls[tc_id]["arguments"])
                                 if _prev_arg_len // 150 < _cur_arg_len // 150:
                                     _partial_args = tool_calls[tc_id]["arguments"]
                                     _content_pos = _partial_args.find('"content"')
-                                    _md_pos = _partial_args.rfind(".md")
-                                    _is_md_write = (
-                                        "artifacts/" in _partial_args
-                                        and ".md" in _partial_args
-                                        and (_content_pos == -1 or _md_pos < _content_pos)
-                                    )
-                                    if _is_md_write:
+                                    _is_text_write = False
+                                    if "artifacts/" in _partial_args:
+                                        _path_m = re.search(r'artifacts/[^"]*(\.[a-zA-Z0-9]+)', _partial_args)
+                                        if _path_m:
+                                            _ext_pos = _partial_args.find(_path_m.group(1))
+                                            if _content_pos == -1 or _ext_pos < _content_pos:
+                                                _candidate = _path_m.group(0).split("/")[-1]
+                                                _is_text_write, _ = _get_text_file_info(_candidate)
+                                    if _is_text_write:
                                         _md_stream_elem = cl.CustomElement(
                                             name="MarkdownRenderer",
                                             props={

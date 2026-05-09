@@ -15,8 +15,17 @@ from lxml import etree
 SLIDE_CONTENT_TYPE = (
     "application/vnd.openxmlformats-officedocument.presentationml.slide+xml"
 )
+CHART_CONTENT_TYPE = (
+    "application/vnd.openxmlformats-officedocument.drawingml.chart+xml"
+)
+XLSX_CONTENT_TYPE = (
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
 SLIDE_REL_TYPE = (
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide"
+)
+CHART_REL_TYPE = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart"
 )
 RELS_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 CT_NS   = "http://schemas.openxmlformats.org/package/2006/content-types"
@@ -117,6 +126,18 @@ def _merge_slides(src_dir: Path, tpl_dir: Path, layout_hints: list | None = None
             if not dest.exists():
                 shutil.copy(mf, dest)
 
+    # 複製 source 的 charts 和 embeddings（圖表所需資源）
+    _copy_charts(src_dir, tpl_dir)
+
+    src_emb = src_dir / "ppt" / "embeddings"
+    tpl_emb = tpl_dir / "ppt" / "embeddings"
+    if src_emb.exists():
+        tpl_emb.mkdir(exist_ok=True)
+        for f in src_emb.iterdir():
+            dest = tpl_emb / f.name
+            if not dest.exists():
+                shutil.copy(f, dest)
+
     # 清除孤立的 notesSlides（備忘稿內容，對應已刪除的模板投影片）
     # notesMasters 保留，否則 presentation.xml 的 notesSz 定義會找不到參照而報損壞
     notes_dir = tpl_dir / "ppt" / "notesSlides"
@@ -187,6 +208,54 @@ def _fix_slide_rels(src_rels_path: Path, dest_path: Path, layout_target: str | N
     tree.write(str(dest_path), xml_declaration=True, encoding="UTF-8", standalone=True)
 
 
+def _copy_charts(src_dir: Path, tpl_dir: Path) -> None:
+    """複製 source 的 charts 目錄到 template，處理檔名衝突（重新編號）。
+
+    若 tpl 已有同名 chart（例如模板自帶），對 source chart 重新編號，
+    並同步更新所有 slide rels 中對應的 Target 路徑。
+    """
+    src_charts = src_dir / "ppt" / "charts"
+    tpl_charts = tpl_dir / "ppt" / "charts"
+    if not src_charts.exists():
+        return
+
+    tpl_charts.mkdir(parents=True, exist_ok=True)
+    (tpl_charts / "_rels").mkdir(exist_ok=True)
+
+    # 取得 tpl 已有的最大 chart 編號
+    existing_nums = set()
+    for f in tpl_charts.glob("chart*.xml"):
+        digits = "".join(filter(str.isdigit, f.stem))
+        if digits:
+            existing_nums.add(int(digits))
+    next_num = max(existing_nums, default=0) + 1
+
+    # 逐一複製 src chart，衝突時重新編號
+    tpl_slides_rels_dir = tpl_dir / "ppt" / "slides" / "_rels"
+    for src_chart in sorted(src_charts.glob("chart*.xml"),
+                            key=lambda p: int("".join(filter(str.isdigit, p.stem)) or "0")):
+        dest_name = src_chart.name
+        if (tpl_charts / dest_name).exists():
+            dest_name = f"chart{next_num}.xml"
+            next_num += 1
+
+        shutil.copy(src_chart, tpl_charts / dest_name)
+
+        # 複製對應的 chart rels
+        src_chart_rel = src_charts / "_rels" / f"{src_chart.name}.rels"
+        if src_chart_rel.exists():
+            shutil.copy(src_chart_rel, tpl_charts / "_rels" / f"{dest_name}.rels")
+
+        # 若檔名有改變，更新 slide rels 中指向此 chart 的 Target
+        if dest_name != src_chart.name and tpl_slides_rels_dir.exists():
+            old_target = f"../charts/{src_chart.name}"
+            new_target = f"../charts/{dest_name}"
+            for rels_file in tpl_slides_rels_dir.glob("slide*.xml.rels"):
+                content = rels_file.read_text(encoding="utf-8")
+                if old_target in content:
+                    rels_file.write_text(content.replace(old_target, new_target), encoding="utf-8")
+
+
 def _update_content_types(tpl_dir: Path, slide_count: int) -> None:
     ct_path = tpl_dir / "[Content_Types].xml"
     tree = etree.parse(str(ct_path))
@@ -201,6 +270,22 @@ def _update_content_types(tpl_dir: Path, slide_count: int) -> None:
         ov = etree.SubElement(root, f"{{{CT_NS}}}Override")
         ov.set("PartName", f"/ppt/slides/slide{i}.xml")
         ov.set("ContentType", SLIDE_CONTENT_TYPE)
+    # 補齊 chart Override 條目
+    charts_dir = tpl_dir / "ppt" / "charts"
+    if charts_dir.exists():
+        existing_parts = {ov.get("PartName") for ov in root.findall(f"{{{CT_NS}}}Override")}
+        for cf in sorted(charts_dir.glob("chart*.xml")):
+            part = f"/ppt/charts/{cf.name}"
+            if part not in existing_parts:
+                ov = etree.SubElement(root, f"{{{CT_NS}}}Override")
+                ov.set("PartName", part)
+                ov.set("ContentType", CHART_CONTENT_TYPE)
+    # 補齊 xlsx Default（圖表 embedding 數據格式）
+    extensions = {d.get("Extension") for d in root.findall(f"{{{CT_NS}}}Default")}
+    if "xlsx" not in extensions:
+        d = etree.SubElement(root, f"{{{CT_NS}}}Default")
+        d.set("Extension", "xlsx")
+        d.set("ContentType", XLSX_CONTENT_TYPE)
     tree.write(str(ct_path), xml_declaration=True, encoding="UTF-8", standalone=True)
 
 

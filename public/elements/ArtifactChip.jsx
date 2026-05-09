@@ -59,7 +59,7 @@ export default function ArtifactChip() {
     // 右側文字
     React.createElement(
       "div",
-      { style: { display: "flex", flexDirection: "column", gap: "2px", minWidth: 0, color: "#111" } },
+      { style: { display: "flex", flexDirection: "column", gap: "2px", minWidth: 0, color: "#111", flex: 1 } },
 
       React.createElement(
         "div",
@@ -86,6 +86,30 @@ export default function ArtifactChip() {
         },
         clicked ? "側邊欄已開啟" : "點擊在側邊欄開啟",
       ),
+    ),
+
+    // 最右側箭頭 icon（指向左側，示意在左側 / 側邊欄打開）
+    React.createElement(
+      "svg",
+      {
+        xmlns:   "http://www.w3.org/2000/svg",
+        width:   "16",
+        height:  "16",
+        viewBox: "0 0 24 24",
+        fill:    "none",
+        stroke:  "currentColor",
+        strokeWidth: "2",
+        strokeLinecap:  "round",
+        strokeLinejoin: "round",
+        style: {
+          flexShrink: 0,
+          color:      clicked ? "var(--primary, #6366f1)" : "#9ca3af",
+          transition: "color 0.15s",
+        },
+      },
+      // → arrow: line + arrowhead pointing right
+      React.createElement("line",     { x1: "5", y1: "12", x2: "19", y2: "12" }),
+      React.createElement("polyline", { points: "12 5 19 12 12 19" }),
     ),
   );
 }

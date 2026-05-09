@@ -26,6 +26,7 @@ from utils.user_profile import (
     get_conversation_artifacts_dir,
 )
 from utils.signed_url import rewrite_artifact_paths, fix_md_relative_paths
+from utils.file_handler import _get_text_file_info
 from utils.skills_manager import (
     skills_from_json, get_skill_content,
     _parse_frontmatter as _pfm,
@@ -1110,6 +1111,112 @@ async def _write_skill_file(target_abs: str, user_skills_abs: str, content: str,
     )
 
 
+def _apply_edit(
+    content: str,
+    old_string: str,
+    new_string: str,
+    replace_all: bool = False,
+) -> tuple[str, str | None]:
+    """搜尋 old_string 並替換為 new_string，回傳 (new_content, error)。
+    仿照 Claude Code FileEditTool 設計：
+    - 層 1：精確匹配
+    - 層 2：quote 正規化後從原始 content 取出實際子字串，再用 preserveQuoteStyle 套用相同 quote 風格到 new_string
+    - 層 3：行尾空白正規化（fallback）
+    - new_string='' 時若 old_string 後緊跟換行，連帶刪除該換行
+    """
+    if old_string == new_string:
+        return content, "old_string 與 new_string 完全相同，無需替換。"
+
+    CURLY = {
+        "‘": "'", "’": "'",   # '' → ''
+        "“": '"', "”": '"',   # "" → ""
+    }
+
+    def _norm_quotes(s: str) -> str:
+        for k, v in CURLY.items():
+            s = s.replace(k, v)
+        return s
+
+    def _preserve_quote_style(actual_old: str, new: str) -> str:
+        has_double = any(c in actual_old for c in "“”")
+        has_single = any(c in actual_old for c in "‘’")
+        if not has_double and not has_single:
+            return new
+        result = new
+        if has_double:
+            out, toggle = [], True
+            for ch in result:
+                if ch == '"':
+                    out.append("“" if toggle else "”")
+                    toggle = not toggle
+                else:
+                    out.append(ch)
+            result = "".join(out)
+        if has_single:
+            out, toggle = [], True
+            for ch in result:
+                if ch == "'":
+                    out.append("‘" if toggle else "’")
+                    toggle = not toggle
+                else:
+                    out.append(ch)
+            result = "".join(out)
+        return result
+
+    def _norm_ws(s: str) -> str:
+        return "\n".join(line.rstrip() for line in s.splitlines())
+
+    def _count(haystack: str, needle: str) -> int:
+        n, i = 0, 0
+        while (p := haystack.find(needle, i)) != -1:
+            n += 1
+            i = p + len(needle)
+        return n
+
+    def _do_replace(src: str, needle: str, replacement: str) -> str:
+        if replacement != "":
+            return src.replace(needle, replacement) if replace_all else src.replace(needle, replacement, 1)
+        # 刪除模式：若 needle 不以 \n 結尾但後面緊跟 \n，連帶刪除（仿 CC applyEditToFile）
+        strip_nl = not needle.endswith("\n") and (needle + "\n") in src
+        target = needle + "\n" if strip_nl else needle
+        return src.replace(target, replacement) if replace_all else src.replace(target, replacement, 1)
+
+    # 層 1：精確匹配
+    if old_string in content:
+        actual_old = old_string
+        actual_new = new_string
+    else:
+        # 層 2：quote 正規化——從原始 content 取出實際子字串（仿 CC findActualString）
+        nq_search = _norm_quotes(old_string)
+        nq_content = _norm_quotes(content)
+        idx = nq_content.find(nq_search)
+        if idx != -1:
+            actual_old = content[idx: idx + len(old_string)]
+            actual_new = _preserve_quote_style(actual_old, new_string)
+        else:
+            # 層 3：行尾空白正規化（fallback）
+            ws_old = _norm_ws(old_string)
+            ws_content = _norm_ws(content)
+            if ws_old in ws_content:
+                actual_old = ws_old
+                actual_new = new_string
+                content = ws_content
+            else:
+                return content, (
+                    f"找不到 old_string，請確認文字完全一致（含空白與縮排）。\n"
+                    f"old_string 前 50 字元：{old_string[:50]!r}"
+                )
+
+    count = _count(content, actual_old)
+    if not replace_all and count > 1:
+        return content, (
+            f"old_string 在檔案中出現 {count} 次，無法確定替換哪一個。\n"
+            f"請提供更多上下文讓 old_string 唯一，或設 replace_all=true 全部替換。"
+        )
+
+    return _do_replace(content, actual_old, actual_new), None
+
+
 @mcp.tool()
 async def write_file(
     path: str = Field(description=(
@@ -1172,19 +1279,247 @@ async def write_file(
     with open(target_abs, "w", encoding="utf-8") as f:
         f.write(content)
 
-    # .md 寫入後觸發 sidebar 串流渲染
+    # 純文字格式寫入後觸發 sidebar 串流渲染
+    is_text, lang = _get_text_file_info(os.path.basename(target_abs))
+    if is_text and session_id:
+        file_id = f"md_{uuid.uuid4().hex[:8]}"
+        safe_title = os.path.basename(target_abs)
+        if target_abs.endswith(".md"):
+            display_content = content
+        else:
+            fence_lang = lang or ""
+            display_content = f"```{fence_lang}\n{content}\n```"
+        _pending_md_renders[session_id] = {
+            "md_id":            file_id,
+            "markdown_content": display_content,
+            "title":            safe_title,
+            "file_path":        target_abs,
+        }
+        return f"已寫入：{safe_title} [RENDER_MARKDOWN_OK] md_id={file_id} title={safe_title}"
+
+    return f"已寫入：{os.path.basename(target_abs)}"
+
+
+@mcp.tool()
+async def grep_files(
+    pattern: str = Field(description="搜尋的正則表達式（Python re 語法），例如 '## .+' 或 'TODO'"),
+    path: str = Field(
+        default="artifacts/",
+        description=(
+            "指定搜尋的檔案或目錄（與 write_file 相同前綴規則）：\n"
+            "- 目錄：artifacts/、uploads/、memory/\n"
+            "- 單一檔案：artifacts/report.md\n"
+            "預設搜尋 artifacts/ 目錄"
+        ),
+    ),
+    glob: str = Field(
+        default="**/*",
+        description="在目錄下過濾檔案的 glob pattern，例如 '*.md'、'*.py'。指定單一檔案時忽略此參數。",
+    ),
+    context_lines: int = Field(default=3, description="每個匹配前後顯示的行數（0–10）"),
+    ignore_case: bool = Field(default=False, description="是否忽略大小寫"),
+    head_limit: int = Field(default=250, description="輸出截斷行數，超過則截斷並提示（等同 | head -N）。傳 0 表示不限制。"),
+    offset: int = Field(default=0, description="跳過前 N 行輸出（配合 head_limit 分頁，等同 | tail -n +N）"),
+) -> str:
+    """在對話資料夾或記憶目錄中用正則表達式搜尋內容，回傳匹配行號與上下文。
+    適合在使用 edit_file 取代前先確認 old_string 的確切位置與內容。
+    輸出超過 head_limit 行時自動截斷；用 offset 搭配 head_limit 可分頁取得剩餘結果。
+    """
+    import re
+    from pathlib import Path
+
+    ctx_data = _session_ctx.get()
+    user_id = ctx_data["user_id"]
+    conversation_folder = get_conversation_folder()
+
+    context_lines = max(0, min(10, context_lines))
+    offset = max(0, offset)
+
+    target_abs = _resolve_user_path(path, user_id, conversation_folder)
+
+    memory_dir_abs = os.path.realpath(get_user_memory_dir(user_id))
+    conv_abs = os.path.realpath(conversation_folder)
+    if not _check_path_in_allowed_roots(target_abs, [conv_abs, memory_dir_abs]):
+        return "存取拒絕：只能搜尋對話資料夾或記憶目錄。"
+
+    target_path = Path(target_abs)
+    if target_path.is_file():
+        files = [target_path]
+    elif target_path.is_dir():
+        files = sorted(f for f in target_path.glob(glob) if f.is_file())
+    else:
+        return f"路徑不存在：{path}"
+
+    if not files:
+        return f"沒有找到符合 '{glob}' 的檔案。"
+
+    try:
+        flags = re.IGNORECASE if ignore_case else 0
+        regex = re.compile(pattern, flags)
+    except re.error as e:
+        return f"正則表達式錯誤：{e}"
+
+    all_output_lines: list[str] = []
+    total_matches = 0
+
+    for file_path in files:
+        try:
+            text = file_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+
+        lines = text.splitlines()
+        file_match_blocks = []
+
+        for lineno, line in enumerate(lines, start=1):
+            if regex.search(line):
+                total_matches += 1
+                start = max(0, lineno - 1 - context_lines)
+                end = min(len(lines), lineno + context_lines)
+                file_match_blocks.append({
+                    "match_line": lineno,
+                    "start": start + 1,
+                    "lines": lines[start:end],
+                })
+
+        if not file_match_blocks:
+            continue
+
+        try:
+            rel = file_path.relative_to(Path(conv_abs))
+        except ValueError:
+            try:
+                rel = file_path.relative_to(Path(memory_dir_abs).parent)
+            except ValueError:
+                rel = file_path
+
+        all_output_lines.append(str(rel).replace("\\", "/"))
+        prev_end = -1
+        for block in file_match_blocks:
+            if prev_end != -1 and block["start"] > prev_end + 1:
+                all_output_lines.append("--")
+            for i, ln in enumerate(block["lines"]):
+                lno = block["start"] + i
+                prefix = ">" if lno == block["match_line"] else " "
+                all_output_lines.append(f"  {prefix}{lno:4d}: {ln}")
+            prev_end = block["start"] + len(block["lines"]) - 1
+        all_output_lines.append("")
+
+    if total_matches == 0:
+        return f"沒有找到符合 '{pattern}' 的內容。"
+
+    total_lines = len(all_output_lines)
+    windowed = all_output_lines[offset:]
+    truncated = False
+    if head_limit > 0 and len(windowed) > head_limit:
+        windowed = windowed[:head_limit]
+        truncated = True
+
+    summary_parts = [f"共 {total_matches} 個匹配，輸出 {total_lines} 行"]
+    if truncated:
+        shown_end = offset + head_limit
+        summary_parts.append(f"已截斷（顯示第 {offset + 1}–{shown_end} 行）；用 offset={shown_end} 取得後續結果")
+
+    return "\n".join(windowed) + "\n" + "；".join(summary_parts)
+
+
+@mcp.tool()
+async def edit_file(
+    path: str = Field(description=(
+        "要編輯的檔案路徑（與 write_file 相同前綴規則）：\n"
+        "- 對話 artifacts 檔案：artifacts/output.md\n"
+        "- 記憶檔案：memory/filename.md\n"
+        "- 使用者技能檔案：skills/{name}/SKILL.md 等\n"
+        "注意：此工具只替換片段，不覆蓋整個檔案。"
+    )),
+    old_string: str = Field(description=(
+        "要被替換的原始文字片段。必須與檔案內容完全一致（含縮排、空白）。\n"
+        "建議先用 grep_files 或 read_file 確認確切內容後再填入。\n"
+        "若該片段在檔案中出現多次，替換將失敗（除非設 replace_all=true）。"
+    )),
+    new_string: str = Field(description=(
+        "替換後的新文字。可以為空字串（代表刪除 old_string）。\n"
+        "縮排與換行需自行維護，系統不會自動調整。"
+    )),
+    replace_all: bool = Field(
+        default=False,
+        description="是否替換檔案中所有符合 old_string 的位置（預設 false：只替換第一個）。",
+    ),
+) -> str:
+    """在檔案中搜尋 old_string 並替換為 new_string，無需重寫整個檔案。
+    適合對大型檔案進行局部修改，節省 token 消耗。
+    建議先用 grep_files 確認 old_string 的確切位置與內容。
+    """
+    ctx_data = _session_ctx.get()
+    user_id = ctx_data["user_id"]
+    session_id = ctx_data.get("session_id", "")
+    conversation_folder = get_conversation_folder()
+
+    memory_dir_abs  = os.path.realpath(get_user_memory_dir(user_id))
+    artifacts_abs   = os.path.realpath(get_conversation_artifacts_dir(conversation_folder))
+    user_skills_abs = os.path.realpath(get_user_skills_dir(user_id))
+
+    target_abs = _resolve_user_path(path, user_id, conversation_folder)
+
+    # Memory 目錄
+    if target_abs.startswith(memory_dir_abs + os.sep) or target_abs == memory_dir_abs:
+        filename = os.path.basename(target_abs)
+        abs_path, err = validate_memory_path(user_id, filename)
+        if err:
+            return f"存取拒絕：{err}"
+        if not os.path.exists(abs_path):
+            return f"記憶檔案不存在：{filename}"
+        with open(abs_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        new_content, error = _apply_edit(content, old_string, new_string, replace_all)
+        if error:
+            return f"編輯失敗：{error}"
+        if filename == "MEMORY.md":
+            return write_memory_index(user_id, new_content)
+        return write_memory_file(user_id, filename, new_content)
+
+    # Skills 目錄
+    if target_abs.startswith(user_skills_abs + os.sep):
+        if not os.path.isfile(target_abs):
+            return f"檔案不存在：{path}"
+        with open(target_abs, "r", encoding="utf-8") as f:
+            content = f.read()
+        new_content, error = _apply_edit(content, old_string, new_string, replace_all)
+        if error:
+            return f"編輯失敗：{error}"
+        return await _write_skill_file(target_abs, user_skills_abs, new_content, session_id, user_id)
+
+    # Artifacts 目錄
+    if not target_abs.startswith(artifacts_abs + os.sep):
+        return "存取拒絕：只能編輯自己的對話 artifacts/ 資料夾或記憶目錄。"
+    if not os.path.isfile(target_abs):
+        return f"檔案不存在：{path}"
+
+    async with aiofiles.open(target_abs, "r", encoding="utf-8") as f:
+        content = await f.read()
+
+    new_content, error = _apply_edit(content, old_string, new_string, replace_all)
+    if error:
+        return f"編輯失敗：{error}"
+
+    if target_abs.endswith(".md"):
+        new_content = fix_md_relative_paths(new_content, target_abs)
+
+    async with aiofiles.open(target_abs, "w", encoding="utf-8") as f:
+        await f.write(new_content)
+
     if target_abs.endswith(".md") and session_id:
         md_id = f"md_{uuid.uuid4().hex[:8]}"
         safe_title = os.path.splitext(os.path.basename(target_abs))[0]
         _pending_md_renders[session_id] = {
             "md_id":            md_id,
-            "markdown_content": content,
+            "markdown_content": new_content,
             "title":            safe_title,
             "file_path":        target_abs,
         }
-        return f"已寫入：{os.path.basename(target_abs)} [RENDER_MARKDOWN_OK] md_id={md_id} title={safe_title}"
+        return f"已編輯：{os.path.basename(target_abs)} [RENDER_MARKDOWN_OK] md_id={md_id} title={safe_title}"
 
-    return f"已寫入：{os.path.basename(target_abs)}"
+    return f"已編輯：{os.path.basename(target_abs)}"
 
 
 @mcp.tool()
@@ -1337,7 +1672,7 @@ async def capture_video_frames(
 
 @mcp.tool()
 async def capture_ppt_slides(
-    ppt_path: str = Field(description="PPT/PPTX 檔案路徑（相對於對話資料夾，例如 'uploads/slides.pptx' 或 'artifacts/report.ppt'）"),
+    ppt_path: str = Field(description="PPT/PPTX 檔案路徑。支援：對話資料夾（如 'uploads/slides.pptx'、'artifacts/report.ppt'）、系統技能資源（如 'system_skills/pptgenjs/assets/templates/auo.pptx'）、使用者技能資源（如 'skills/mypptskill/template.pptx'）"),
     slides: list[int] = Field(
         default=[],
         description=(
@@ -1359,12 +1694,20 @@ async def capture_ppt_slides(
     if not soffice:
         return "錯誤：找不到 soffice（LibreOffice），請確認系統已安裝 LibreOffice 並加入 PATH。"
 
+    ctx_data = _session_ctx.get()
+    user_id = ctx_data["user_id"]
     root_folder = get_conversation_folder()
     artifacts_dir = get_conversation_artifacts_dir(root_folder)
 
-    ppt_abs = _resolve_file_path(ppt_path, root_folder)
-    if not _check_path_in_allowed_roots(ppt_abs, [os.path.realpath(root_folder)]):
-        return "存取拒絕：只能存取對話資料夾中的 PPT 檔案。"
+    ppt_abs = _resolve_user_path(ppt_path, user_id, root_folder)
+    allowed_roots = [
+        os.path.realpath(root_folder),
+        os.path.realpath(os.path.join(_PROJECT_ROOT, "system_skills")),
+    ]
+    if user_id:
+        allowed_roots.append(os.path.realpath(get_user_profile_dir(user_id)))
+    if not _check_path_in_allowed_roots(ppt_abs, allowed_roots):
+        return "存取拒絕：只能存取對話資料夾、system_skills/ 或自己的技能資料夾中的 PPT 檔案。"
 
     if not os.path.isfile(ppt_abs):
         return f"PPT 檔案不存在：{ppt_path}"
@@ -1820,11 +2163,12 @@ _FUNC_MAP: dict = {
     "read_file": read_file,
     "download_youtube": download_youtube,
     "list_youtube_subtitles": list_youtube_subtitles,
-    # "attempt_completion": attempt_completion,
     # "query_employee": query_employee,
     "http_request": http_request,
     "activate_skill": activate_skill,
     "write_file": write_file,
+    "grep_files": grep_files,
+    "edit_file": edit_file,
     "delete_file": delete_file,
     "ask_user_question": ask_user_question,
     "capture_video_frames": capture_video_frames,
