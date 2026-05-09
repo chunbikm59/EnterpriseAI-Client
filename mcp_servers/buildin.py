@@ -1909,12 +1909,12 @@ async def ask_user_question(
 
 @mcp.tool()
 async def render_html(
-    html_code: str = Field(
-        default="",
+    file_path: str = Field(
         description=(
-            "要渲染的完整 HTML 文件字串。必須是可獨立執行的自包含文件，例如：\n"
-            "<!DOCTYPE html><html><head>...</head><body>...</body></html>\n"
-            "支援：\n"
+            "已存在的 HTML 檔案路徑。請先用 write_file 將 HTML 寫入後再呼叫此 tool。\n"
+            "- 相對路徑：以對話資料夾為 base（例如 artifacts/demo.html）\n"
+            "- 絕對路徑：需在自己的對話資料夾或使用者 profile 目錄內\n"
+            "HTML 支援：\n"
             "- 純 HTML + CSS（含 <style> 標籤）\n"
             "- JavaScript（含 <script> 標籤）\n"
             "- CDN 引入（如 Chart.js、D3.js、Tailwind CSS、Mermaid.js 等）\n"
@@ -1931,16 +1931,6 @@ async def render_html(
             "- 使用 <video> 標籤，src 寫相對路徑 ../uploads/影片檔名\n"
             "- 例如：<video src=\"../uploads/video.mkv\" controls style=\"width:100%\"></video>\n"
             "- 系統會自動將相對路徑轉換為完整 API URL\n"
-            "與 file_path 二擇一，不可同時為空。"
-        )
-    ),
-    file_path: str = Field(
-        default="",
-        description=(
-            "已存在的 HTML 檔案路徑（與 html_code 二擇一）。\n"
-            "適合 agent 先用 write_file 寫好 HTML 後，直接指定路徑渲染，省去重複傳輸。\n"
-            "- 相對路徑：以對話資料夾為 base（例如 artifacts/demo.html）\n"
-            "- 絕對路徑：需在自己的對話資料夾或使用者 profile 目錄內\n"
             "只接受 .html 檔案，大小限制 500KB。"
         )
     ),
@@ -1952,43 +1942,42 @@ async def render_html(
     """在 Chainlit sidebar 中以沙盒 iframe 渲染 HTML/SVG/JavaScript 內容。
     適合用來展示：資訊視覺化、互動式 UI、圖表、SVG 圖形、靜態網頁、儀表板等。
     渲染後會顯示在右側 sidebar 供使用者即時查看，並支援版本歷史切換。
+    使用前請先用 write_file 將 HTML 寫入檔案，再以 file_path 指定路徑呼叫此 tool。
     """
     ctx = _session_ctx.get()
     session_id = ctx.get("session_id", "")
     if not session_id:
         return "錯誤：無法取得 session_id，render_html 只能在 Chainlit session 中使用。"
 
+    if not file_path or not file_path.strip():
+        return "錯誤：file_path 不能為空，請先用 write_file 寫入 .html 檔案後再呼叫。"
+
     MAX_HTML_SIZE = 500 * 1024  # 500KB
 
-    # 若提供 file_path，讀取檔案內容覆蓋 html_code
-    if file_path and not html_code.strip():
-        user_id = ctx.get("user_id", "")
-        conv_folder = get_conversation_folder()
+    user_id = ctx.get("user_id", "")
+    conv_folder = get_conversation_folder()
 
-        abs_path = _resolve_file_path(file_path, conv_folder)
-        allowed_roots = [os.path.realpath(conv_folder)]
-        if user_id:
-            allowed_roots.append(os.path.realpath(get_user_profile_dir(user_id)))
-        if not _check_path_in_allowed_roots(abs_path, allowed_roots):
-            return "存取拒絕：只能讀取自己的對話資料夾或使用者目錄。"
+    abs_path = _resolve_file_path(file_path, conv_folder)
+    allowed_roots = [os.path.realpath(conv_folder)]
+    if user_id:
+        allowed_roots.append(os.path.realpath(get_user_profile_dir(user_id)))
+    if not _check_path_in_allowed_roots(abs_path, allowed_roots):
+        return "存取拒絕：只能讀取自己的對話資料夾或使用者目錄。"
 
-        if not os.path.isfile(abs_path):
-            return f"檔案不存在：{file_path}"
-        if not abs_path.lower().endswith(".html"):
-            return f"不支援的格式：只接受 .html 檔案。"
+    if not os.path.isfile(abs_path):
+        return f"檔案不存在：{file_path}"
+    if not abs_path.lower().endswith(".html"):
+        return f"不支援的格式：只接受 .html 檔案。"
 
-        file_size = os.path.getsize(abs_path)
-        if file_size > MAX_HTML_SIZE:
-            return f"檔案過大（{file_size / 1024:.1f} KB），超過 500KB 上限。"
+    file_size = os.path.getsize(abs_path)
+    if file_size > MAX_HTML_SIZE:
+        return f"檔案過大（{file_size / 1024:.1f} KB），超過 500KB 上限。"
 
-        async with aiofiles.open(abs_path, "r", encoding="utf-8") as f:
-            html_code = await f.read()
+    async with aiofiles.open(abs_path, "r", encoding="utf-8") as f:
+        html_code = await f.read()
 
-    if not html_code or not html_code.strip():
-        return "錯誤：html_code 與 file_path 不能同時為空，請擇一提供。"
-
-    if len(html_code.encode("utf-8")) > MAX_HTML_SIZE:
-        return "錯誤：HTML 內容超過 500KB 上限，請精簡後重試。"
+    if not html_code.strip():
+        return "錯誤：HTML 檔案內容為空。"
 
     artifact_id = f"art_{uuid.uuid4().hex[:8]}"
     safe_title = (title or "Artifact").strip()
@@ -2039,20 +2028,24 @@ async def render_html(
 
 @mcp.tool()
 async def render_pptx(
-    pptx_script: str = Field(
+    script_path: str = Field(
         description=(
-            "完整的 pptxgenjs JavaScript 程式碼字串（不含 <script> 標籤）。\n"
-            "必須使用 pptxgenjs API 建立投影片。CDN bundle 暴露的全域建構函式為 PptxGenJS（注意大小寫）。\n"
-            "腳本最後必須呼叫 window.__pptxDone(prs) 傳回 PptxGenJS 實例，\n"
-            "以便 element 觸發下載。\n"
-            "圖片嵌入：若需嵌入對話資料夾中的圖片，在 addImage 的 path 欄位直接寫相對路徑。\n"
-            "支援 uploads/ 和 artifacts/ 下的圖片，路徑相對於對話資料夾。\n"
-            "例如：slide.addImage({ path: 'uploads/photo.png', x:1, y:1, w:4, h:3 })\n"
-            "範例：\n"
+            "已存在的 pptxgenjs JavaScript 腳本檔案路徑。\n"
+            "請先用 write_file 將腳本寫入後再呼叫此 tool（建議路徑：artifacts/slides.js）。\n"
+            "- 相對路徑：以對話資料夾為 base（例如 artifacts/slides.js）\n"
+            "- 絕對路徑：需在自己的對話資料夾或使用者 profile 目錄內\n"
+            "腳本規格：\n"
+            "- 必須使用 pptxgenjs API 建立投影片，CDN bundle 暴露的全域建構函式為 PptxGenJS（注意大小寫）\n"
+            "- 腳本最後必須呼叫 window.__pptxDone(prs) 傳回 PptxGenJS 實例，以便觸發下載\n"
+            "- 圖片嵌入：在 addImage 的 path 欄位直接寫相對路徑（相對於對話資料夾）\n"
+            "  支援 uploads/ 和 artifacts/ 下的圖片，例如：\n"
+            "  slide.addImage({ path: 'uploads/photo.png', x:1, y:1, w:4, h:3 })\n"
+            "範例腳本：\n"
             "  let prs = new PptxGenJS();\n"
             "  let slide = prs.addSlide();\n"
             "  slide.addText('Hello', {x:1, y:1, fontSize:36});\n"
-            "  window.__pptxDone(prs);"
+            "  window.__pptxDone(prs);\n"
+            "只接受 .js 檔案，大小限制 200KB。"
         )
     ),
     title: str = Field(
@@ -2070,13 +2063,14 @@ async def render_pptx(
             "啟用 pptgenjs skill 後，從可用資源清單中取得模板路徑，\n"
             "例如：system_skills/pptgenjs/assets/templates/corporate.pptx\n"
             "後端會保留模板的 slideMasters/、slideLayouts/、theme/，\n"
-            "並將生成的投影片內容套入。不需要修改 pptx_script 的寫法。\n"
+            "並將生成的投影片內容套入。不需要修改腳本的寫法。\n"
             "留空則使用 pptxgenjs 預設樣式，不套用模板。"
         )
     ),
 ) -> str:
     """在 Chainlit sidebar 中執行 pptxgenjs 腳本並顯示投影片預覽，提供 .pptx 下載按鈕。
     使用 CDN 版本的 pptxgenjs（https://cdn.jsdelivr.net/gh/gitbrent/pptxgenjs/dist/pptxgen.bundle.js）。
+    使用前請先用 write_file 將腳本寫入 .js 檔案，再以 script_path 指定路徑呼叫此 tool。
     腳本需以 window.__pptxDone(prs) 傳回 PptxGenJS 實例才能觸發下載。
     """
     ctx = _session_ctx.get()
@@ -2085,12 +2079,33 @@ async def render_pptx(
     if not session_id:
         return "錯誤：無法取得 session_id，render_pptx 只能在 Chainlit session 中使用。"
 
-    if not pptx_script or not pptx_script.strip():
-        return "錯誤：pptx_script 不能為空。"
+    if not script_path or not script_path.strip():
+        return "錯誤：script_path 不能為空，請先用 write_file 寫入 .js 腳本後再呼叫。"
 
     MAX_SCRIPT_SIZE = 200 * 1024  # 200KB
-    if len(pptx_script.encode("utf-8")) > MAX_SCRIPT_SIZE:
-        return "錯誤：pptx_script 超過 200KB 上限，請精簡腳本。"
+
+    conv_folder = get_conversation_folder()
+    abs_script_path = _resolve_file_path(script_path, conv_folder)
+    allowed_roots = [os.path.realpath(conv_folder)]
+    if user_id:
+        allowed_roots.append(os.path.realpath(get_user_profile_dir(user_id)))
+    if not _check_path_in_allowed_roots(abs_script_path, allowed_roots):
+        return "存取拒絕：只能讀取自己的對話資料夾或使用者目錄。"
+
+    if not os.path.isfile(abs_script_path):
+        return f"檔案不存在：{script_path}"
+    if not abs_script_path.lower().endswith(".js"):
+        return "不支援的格式：只接受 .js 檔案。"
+
+    script_size = os.path.getsize(abs_script_path)
+    if script_size > MAX_SCRIPT_SIZE:
+        return f"檔案過大（{script_size / 1024:.1f} KB），超過 200KB 上限。"
+
+    async with aiofiles.open(abs_script_path, "r", encoding="utf-8") as f:
+        pptx_script = await f.read()
+
+    if not pptx_script.strip():
+        return "錯誤：腳本檔案內容為空。"
 
     # 驗證 template_path（只允許 system_skills/ 或使用者自己的 skills/ 目錄）
     template_abs_path = ""
