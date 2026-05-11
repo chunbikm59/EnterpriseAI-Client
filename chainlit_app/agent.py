@@ -32,7 +32,7 @@ from utils.tool_formatter import (
 )
 from chainlit_app.file_handler import check_and_process_new_files
 from utils.signed_url import StreamingPathRewriter
-from mcp_servers.buildin import _pending_renders, _pending_md_renders, _pptx_upload_events
+from agent_tools import _pending_renders, _pending_md_renders, _pptx_upload_events
 
 logger = logging.getLogger(__name__)
 

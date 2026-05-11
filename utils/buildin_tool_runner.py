@@ -6,7 +6,7 @@ buildin 工具的 schema 提取 + 直接呼叫 executor。
 透過 contextvars 傳遞 session context（session_id, user_id, conversation_id, conversation_folder）。
 """
 from typing import Any, Callable
-from mcp_servers.buildin import mcp, _FUNC_MAP, _session_ctx
+from agent_tools import mcp, _FUNC_MAP, _session_ctx
 
 
 async def get_buildin_tool_schemas() -> list[dict[str, Any]]:

@@ -15,7 +15,7 @@ import chainlit_app.data_layer  # noqa: F401
 
 
 # ── 本專案：工具函數 ──
-from mcp_servers.buildin import unregister_session_skills
+from agent_tools import unregister_session_skills
 from utils.conversation_storage import (
     finalize_conversation_file,
     init_conversation_file,

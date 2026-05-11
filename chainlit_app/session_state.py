@@ -7,7 +7,7 @@ import chainlit as cl
 from chainlit.input_widget import Switch, Tab
 from chainlit.types import CommandDict
 
-from mcp_servers.buildin import register_session_skills
+from agent_tools import register_session_skills
 from utils.mcp_manager_legacy import MCPConnectionManager
 from utils.mcp_servers_config import get_mcp_servers_config
 from utils.memory_manager import load_memory_index, MEMORY_MANAGEMENT_INSTRUCTIONS

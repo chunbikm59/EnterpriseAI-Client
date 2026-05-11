@@ -81,7 +81,7 @@ async def pptx_preview(req: PptxPreviewRequest, request: Request):
     pptx_path.write_bytes(pptx_bytes)
 
     # ── 通知後端等待方：.pptx 已存檔，agent 可繼續（不等 LibreOffice）──
-    from mcp_servers.buildin import _pptx_upload_events
+    from agent_tools import _pptx_upload_events
     _upload_entry = _pptx_upload_events.get(req.pptx_id)
     if _upload_entry:
         _upload_entry["result"]["success"] = True
@@ -169,7 +169,7 @@ async def pptx_upload_abort(req: PptxAbortRequest):
     sendBeacon 無法帶 cookie，故此端點不驗證 JWT；
     只觸發 in-memory event，不寫入任何檔案，無安全風險。
     """
-    from mcp_servers.buildin import _pptx_upload_events
+    from agent_tools import _pptx_upload_events
     entry = _pptx_upload_events.get(req.pptx_id)
     if entry:
         entry["result"]["success"] = False

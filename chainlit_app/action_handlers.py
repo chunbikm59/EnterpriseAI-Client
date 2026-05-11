@@ -5,7 +5,7 @@ import pathlib
 import aiofiles
 import chainlit as cl
 
-from mcp_servers.buildin import _pending_forms
+from agent_tools import _pending_forms
 from chainlit_app.agent import _handle_render_html, _handle_render_pptx, _handle_render_markdown, ENABLE_SESSION_HISTORY
 from utils.conversation_storage import append_ui_event
 from utils.user_profile import get_conversation_artifacts_dir
