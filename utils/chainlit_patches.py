@@ -1,33 +1,55 @@
 """
 啟動時自動 patch Chainlit 前端 bundle，修復在非 Secure Context（http://IP:port）
-下 navigator.clipboard.writeText() 拋例外導致「建立分享連結失敗」的問題。
+下 navigator.clipboard.writeText() 無法使用的問題。
 
 原因：瀏覽器 Clipboard API 要求 Secure Context（HTTPS 或 localhost），
-      用 http://IP:port 時 clipboard 操作失敗，被 catch 後誤報失敗訊息。
-修法：為三處 clipboard.writeText(y) 加上 .catch(()=>{}) fallback。
+      用 http://IP:port 時 navigator.clipboard 不可用，複製功能完全失效。
+修法：將三處 clipboard.writeText(y) 替換成帶 execCommand fallback 的版本，
+      優先用 Clipboard API，失敗時改用 document.execCommand('copy')。
 """
 
-import glob
 import logging
 import pathlib
 
 logger = logging.getLogger(__name__)
 
+# 用 textarea + execCommand 做 clipboard fallback 的 inline async IIFE
+# 優先嘗試 navigator.clipboard.writeText，失敗或不可用時改用 execCommand
+_COPY_HELPER = (
+    "(async t=>{try{if(navigator.clipboard){await navigator.clipboard.writeText(t);return}}catch(e){}"
+    "const el=document.createElement('textarea');el.value=t;"
+    "el.style.cssText='position:fixed;opacity:0;top:0;left:0';"
+    "document.body.appendChild(el);el.select();"
+    "try{document.execCommand('copy')}finally{document.body.removeChild(el)}})(y)"
+)
+
 _PATCHES: list[tuple[str, str]] = [
-    # copilot 分支
+    # copilot 分支（原始 / 已有 .catch 兩種情況都列出）
+    (
+        "if(c)await navigator.clipboard.writeText(y).catch(()=>{});",
+        f"if(c)await {_COPY_HELPER};",
+    ),
     (
         "if(c)await navigator.clipboard.writeText(y);",
-        "if(c)await navigator.clipboard.writeText(y).catch(()=>{});",
+        f"if(c)await {_COPY_HELPER};",
     ),
     # 已分享時直接複製分支
     (
-        "d(n),await navigator.clipboard.writeText(y),l(!0),s(!0)",
         "d(n),await navigator.clipboard.writeText(y).catch(()=>{}),l(!0),s(!0)",
+        f"d(n),await {_COPY_HELPER},l(!0),s(!0)",
+    ),
+    (
+        "d(n),await navigator.clipboard.writeText(y),l(!0),s(!0)",
+        f"d(n),await {_COPY_HELPER},l(!0),s(!0)",
     ),
     # 新建分享後複製分支
     (
-        "d(n),await navigator.clipboard.writeText(y),await new Promise",
         "d(n),await navigator.clipboard.writeText(y).catch(()=>{}),await new Promise",
+        f"d(n),await {_COPY_HELPER},await new Promise",
+    ),
+    (
+        "d(n),await navigator.clipboard.writeText(y),await new Promise",
+        f"d(n),await {_COPY_HELPER},await new Promise",
     ),
 ]
 
