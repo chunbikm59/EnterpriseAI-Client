@@ -16,6 +16,7 @@ from routers import pptx_preview
 from routers import memory
 from routers import skills
 from routers import artifact_preview
+from utils.chainlit_patches import apply_clipboard_patch
 
 logging.basicConfig(level=logging.WARNING, force=True)
 logging.getLogger("chainlit_app").setLevel(logging.DEBUG)
@@ -27,6 +28,7 @@ _UPLOADS_DIR = _PROJECT_ROOT / "chainlit_uploads"
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
+    apply_clipboard_patch()
     yield
 
 
