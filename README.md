@@ -154,6 +154,52 @@ user_profiles/
 
 ---
 
+## 內建工具（Built-in Tools）
+
+AI 可直接呼叫的 15 個內建工具，涵蓋檔案操作、媒體處理、網路、UI 互動等面向：
+
+### 檔案操作
+
+| 工具 | 說明 |
+|------|------|
+| `list_files` | 列出對話資料夾或記憶目錄中的檔案 |
+| `read_file` | 讀取並轉換多種格式（PDF、DOCX、PPTX、XLSX、圖片、HTML、CSV、JSON、XML、ZIP、EPub）為 Markdown |
+| `write_file` | 在 `artifacts/` 或記憶目錄寫入 / 覆蓋檔案 |
+| `edit_file` | 精確替換檔案中的指定字串，無需重寫整個檔案 |
+| `grep_files` | 以正則表達式搜尋對話或記憶目錄中的檔案內容，回傳行號與上下文 |
+| `delete_file` | 刪除 `artifacts/` 或記憶目錄中的指定檔案或子資料夾 |
+
+### 媒體處理
+
+| 工具 | 說明 |
+|------|------|
+| `capture_video_frames` | 用 ffmpeg 對影片指定時間點截圖，截圖自動嵌入對話 |
+| `capture_ppt_slides` | 用 LibreOffice 將 PPT/PPTX 轉 PDF，再以 PyMuPDF 逐頁截圖 |
+| `download_youtube` | 下載 YouTube 影片為音訊（mp3）、影片（mp4）或字幕（srt） |
+| `list_youtube_subtitles` | 列出 YouTube 影片所有可用字幕（含自動產生字幕） |
+
+### 網路
+
+| 工具 | 說明 |
+|------|------|
+| `http_request` | 發送 HTTP 請求（GET/POST/PUT/PATCH/DELETE），支援串流回應與 multipart/form-data 檔案上傳 |
+
+### UI 互動與渲染
+
+| 工具 | 說明 |
+|------|------|
+| `ask_user_question` | 在對話介面彈出互動表單，支援單選、多選、日期選擇器等題型 |
+| `render_html` | 在側邊欄以沙盒 iframe 渲染 HTML / SVG / JavaScript 內容（資訊視覺化、互動式 UI、圖表） |
+| `render_pptx` | 執行 PptxGenJS 腳本產生 PPT，在側邊欄顯示投影片預覽並提供 `.pptx` 下載 |
+
+### 流程控制
+
+| 工具 | 說明 |
+|------|------|
+| `activate_skill` | 載入指定 Agent Skill 的完整指令，觸發對應的多步驟自動化流程 |
+
+---
+
 ## 技術架構
 
 | 層次 | 技術 |
