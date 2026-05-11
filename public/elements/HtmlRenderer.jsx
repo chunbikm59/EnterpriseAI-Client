@@ -51,11 +51,13 @@ export default function HtmlRenderer() {
     title:           initialTitle,
     conversation_id: props.conversation_id || "",
     is_shared:       isShared,
+    published_url:   props.published_url   || null,
   };
 
   const publishedUrl =
     localPublishedUrls[currentItem.artifact_id] ||
     currentItem.published_url ||
+    props.published_url ||
     null;
 
   const iframeSandbox = [
