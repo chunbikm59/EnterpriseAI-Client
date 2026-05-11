@@ -110,6 +110,7 @@ async def _handle_render_html(payload: dict, send_message: bool = True):
             "history_data":    history_for_display,
             "current_index":   current_index,
             "published_url":   payload.get("published_url"),
+            "is_shared":       payload.get("is_shared", False),
         },
         display="side",
     )

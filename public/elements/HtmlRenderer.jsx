@@ -43,11 +43,14 @@ export default function HtmlRenderer() {
     }
   }, [latestArtifactId]);
 
+  const isShared = props.is_shared || false;
+
   const currentItem = historyData[currentIndex] || {
     artifact_id:     props.artifact_id     || "init",
     html_code:       initialHtml,
     title:           initialTitle,
     conversation_id: props.conversation_id || "",
+    is_shared:       isShared,
   };
 
   const publishedUrl =
@@ -92,6 +95,13 @@ export default function HtmlRenderer() {
   }
 
   function handleOpenNew() {
+    if (currentItem.is_shared || isShared) {
+      const blob = new Blob([currentItem.html_code], { type: "text/html" });
+      const url  = URL.createObjectURL(blob);
+      window.open(url, "_blank");
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      return;
+    }
     const convId = currentItem.conversation_id;
     if (convId) {
       const url = `/api/artifact-preview/${currentItem.artifact_id}?conversation_id=${encodeURIComponent(convId)}`;

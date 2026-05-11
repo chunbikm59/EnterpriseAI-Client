@@ -97,3 +97,18 @@ def get_published_artifact_record(token: str) -> "PublishedArtifact | None":
         if record is not None:
             session.expunge(record)
         return record
+
+
+def get_published_artifact_record_by_id(artifact_id: str) -> "PublishedArtifact | None":
+    """給 artifact_id 回傳 PublishedArtifact ORM 物件，不存在回傳 None。"""
+    if not artifact_id:
+        return None
+    with SessionLocal() as session:
+        record = (
+            session.query(PublishedArtifact)
+            .filter(PublishedArtifact.artifact_id == artifact_id)
+            .first()
+        )
+        if record is not None:
+            session.expunge(record)
+        return record

@@ -137,6 +137,14 @@ async def on_shared_thread_view(thread, current_user: cl.User) -> bool:
                     try:
                         with open(html_path, encoding="utf-8") as f:
                             payload["html_code_inline"] = f.read()
+                        payload["is_shared"] = True
+                        try:
+                            from utils.artifact_publisher import get_published_artifact_record_by_id
+                            pub = get_published_artifact_record_by_id(artifact_id)
+                            if pub:
+                                payload["published_url"] = f"{base_url}/p/{pub.token}"
+                        except Exception:
+                            pass
                         elem["props"] = {**props, "payload": payload}
                     except OSError:
                         pass

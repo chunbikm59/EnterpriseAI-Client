@@ -150,9 +150,11 @@ async def on_reopen_artifact(action: cl.Action):
     html_code_inline = action.payload.get("html_code_inline", "")
     if html_code_inline:
         payload = {
-            "artifact_id": artifact_id,
-            "html_code":   html_code_inline,
-            "title":       action.payload.get("title", artifact_id),
+            "artifact_id":   artifact_id,
+            "html_code":     html_code_inline,
+            "title":         action.payload.get("title", artifact_id),
+            "is_shared":     action.payload.get("is_shared", False),
+            "published_url": action.payload.get("published_url"),
         }
         await _handle_render_html(payload, send_message=False)
         return
