@@ -1,3 +1,23 @@
+// 登入後重定向回原始 thread/share 頁面
+(function () {
+  const STORAGE_KEY = 'chainlit_redirect_after_login';
+  function isThreadOrShare(p) { return p.startsWith('/thread/') || p.startsWith('/share/'); }
+  const path = window.location.pathname;
+  if (isThreadOrShare(path)) {
+    sessionStorage.setItem(STORAGE_KEY, path + window.location.search);
+  } else if (path === '/login') {
+    if (!sessionStorage.getItem(STORAGE_KEY)) {
+      try {
+        const ref = new URL(document.referrer);
+        if (isThreadOrShare(ref.pathname)) sessionStorage.setItem(STORAGE_KEY, ref.pathname + ref.search);
+      } catch (_) {}
+    }
+  } else if (path === '/login/callback') {
+    const redirect = sessionStorage.getItem(STORAGE_KEY);
+    if (redirect) { sessionStorage.removeItem(STORAGE_KEY); window.location.replace(redirect); }
+  }
+})();
+
 // 記憶管理 — 菜單注入 + 完整 Modal UI
 // 後端 API: /api/memory/*  (Chainlit JWT cookie 驗證)
 
