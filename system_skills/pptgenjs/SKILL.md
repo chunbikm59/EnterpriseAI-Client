@@ -274,15 +274,71 @@ slide.addChart(prs.charts.PIE, [{
 
 ### 圖表類型
 
-| 常數 | 圖表 |
-|------|------|
-| `prs.charts.BAR` | 直條 / 橫條 |
-| `prs.charts.LINE` | 折線 |
-| `prs.charts.PIE` | 圓餅 |
-| `prs.charts.DOUGHNUT` | 甜甜圈 |
-| `prs.charts.SCATTER` | 散佈 |
-| `prs.charts.AREA` | 區域 |
-| `prs.charts.RADAR` | 雷達 |
+| 常數 | 圖表 | 備註 |
+|------|------|------|
+| `prs.charts.BAR` | 直條 / 橫條 | `barDir: "col"` 為直條、`"bar"` 為橫條 |
+| `prs.charts.BAR3D` | 3D 直條 / 橫條 | 立體版本，視覺較重，慎用 |
+| `prs.charts.LINE` | 折線 | 無法旋轉成橫向（PowerPoint 限制） |
+| `prs.charts.AREA` | 區域 | 適合趨勢累積比較 |
+| `prs.charts.PIE` | 圓餅 | 單一資料系列 |
+| `prs.charts.DOUGHNUT` | 甜甜圈 | 中空圓餅 |
+| `prs.charts.SCATTER` | 散佈 | 雙數值軸 |
+| `prs.charts.BUBBLE` | 氣泡 | 三維資料（x、y、size） |
+| `prs.charts.BUBBLE3D` | 3D 氣泡 | 立體氣泡 |
+| `prs.charts.RADAR` | 雷達 | 多維度比較 |
+
+### 組合圖（Combo Charts）
+
+需要在同一張圖混合多種圖表類型（例如「直條 + 折線」呈現營收與成長率）時，使用 `addChart` 的組合圖簽名：傳入**圖表類型陣列**而非單一常數。
+
+```javascript
+// 直條（營收，主軸）+ 折線（成長率 %，次軸）
+slide.addChart(
+  [
+    {
+      type: prs.charts.BAR,
+      data: [{ name: "營收", labels: ["Q1","Q2","Q3","Q4"], values: [4500, 5500, 6200, 7100] }],
+      options: { barDir: "col", chartColors: ["4f46e5"] },
+    },
+    {
+      type: prs.charts.LINE,
+      data: [{ name: "成長率", labels: ["Q1","Q2","Q3","Q4"], values: [5, 12, 18, 22] }],
+      options: { secondaryValAxis: true, secondaryCatAxis: true, chartColors: ["f97316"], lineSize: 3 },
+    },
+  ],
+  {
+    x: 0.5, y: 1, w: 9, h: 4,
+    // 雙數值軸 + 雙類別軸（次類別軸建議隱藏，避免與主類別軸重疊）
+    valAxes: [
+      { showValAxisTitle: true, valAxisTitle: "營收（萬）" },
+      { showValAxisTitle: true, valAxisTitle: "成長率（%）", valGridLine: { style: "none" } },
+    ],
+    catAxes: [
+      { catAxisLabelColor: "64748b" },
+      { catAxisHidden: true },   // 次類別軸隱藏（仍會沿用主類別標籤）
+    ],
+    showLegend: true, legendPos: "b",
+  }
+);
+```
+
+**組合圖規則**：
+
+1. **每個子圖一個物件**：`{ type, data, options }`，至少需要兩種不同的 `type`
+2. **建議組合**：`BAR + LINE`、`BAR + AREA` 效果最好；`LINE` 無法旋轉成橫向，搭配橫條 `barDir: "bar"` 不會對齊
+3. **雙軸需求**：若使用次數值軸（`secondaryValAxis: true`），**必須同時開啟次類別軸**（`secondaryCatAxis: true`）才能正常渲染；次類別軸建議用 `catAxisHidden: true` 隱藏
+4. **共用標籤**：即使有次類別軸，pptxgenjs 目前仍會沿用主類別軸的 labels
+5. **options 合併**：每個子圖的 `options` 會與外層整體 `options` 合併，圖表類型特有的選項放在子圖內
+
+### 圖表使用注意事項
+
+1. **隱藏零值標籤**：用 Microsoft 數字格式碼，例如 `"#,##0;-#,##0;;"`（最後一段為 0 值留空）套到 `dataLabelFormatCode`
+2. **數字格式化**：使用 `*LabelFormatCode` 系列屬性控制顯示格式
+   - `dataLabelFormatCode: "#,##0"` — 千分位整數
+   - `dataLabelFormatCode: "0.0%"` — 百分比（一位小數）
+   - `dataLabelFormatCode: "$#,##0;[Red]-$#,##0"` — 貨幣（負值紅字）
+   - `catAxisLabelFormatCode` / `valAxisLabelFormatCode` — 類別軸 / 數值軸標籤格式
+3. **格式碼語法**：遵循 [Microsoft 數字格式代碼規範](https://support.microsoft.com/office/number-format-codes-5026bbd6-04bc-48cd-bf33-80f18b4eae68)（正值;負值;零值;文字）
 
 ---
 
@@ -330,6 +386,30 @@ slide.addChart(prs.charts.PIE, [{
 
 模板 `.pptx` 放於 `system_skills/pptgenjs/assets/templates/`，啟動此 skill 後即可從可用資源清單中看到路徑。
 
+### 套用模板前必做：視覺檢查模板佈景主題
+
+> ⚠️ **凡是要套用 `template_path` 的情況，「無論是否熟悉該模板」**，都必須先用 `capture_ppt_slides` 的 **grid 縮圖模式**檢視模板的所有 layout，**確認佈景主題、背景樣式、主視覺顏色、留白區域**之後，才能進行後續排版、配色與佈局設計。理由：模板每個 layout 已內建背景與裝飾元素，若未先確認，腳本中設定的文字顏色、形狀填色、元素位置常會與模板背景衝突（例如深色背景配深色文字、文字壓到 logo）。
+
+**標準前置流程**：
+
+```
+capture_ppt_slides(
+  ppt_path="system_skills/pptgenjs/assets/templates/default.pptx",
+  grid=True,
+  grid_cols=3
+)
+```
+
+從回傳的 grid 縮圖中觀察並記錄：
+
+1. **背景主色與明暗**：決定文字顏色（深底用淺色字、淺底用深色字）
+2. **主視覺色（強調色）**：標題、線條、形狀填色沿用模板色系，避免突兀
+3. **Logo / 裝飾元素位置**：標記哪些區域不能放置內容，避免覆蓋
+4. **每個 layout 的可用內容區範圍**：決定 `x / y / w / h` 的安全範圍
+5. **字型風格（襯線 / 無襯線、粗細）**：盡量沿用模板的字型語彙
+
+確認後才開始撰寫 `pptx_script` 並設定 `__pptxLayoutHints`。
+
 ### 套用方式
 
 在 `render_pptx` 中傳入 `template_path` 即可：
@@ -372,26 +452,7 @@ window.__pptxDone(prs);
 
 ### 可用版面名稱
 
-**default.pptx**
-
-| 版面名稱（`__layoutHint` 值） | 說明 |
-|---|---|
-| `標題投影片` | 封面頁 |
-| `標題及內容` | 標題 + 內容區塊 |
-| `章節標題` | 新章節標題頁 |
-| `兩個內容` | 左右並排兩欄內容 |
-| `比較` | 左右比較版面 |
-| `只有標題` | 僅顯示標題 |
-| `空白` | 全空白頁 |
-| `含輔助字幕的內容` | 內容 + 輔助字幕 |
-| `含輔助字幕的圖片` | 圖片 + 輔助字幕 |
-| `全景圖片 (含輔助字幕)` | 全景圖片 + 輔助字幕 |
-| `引述 (含輔助字幕)` | 引述文字 + 輔助字幕 |
-| `名片` | 名片樣式 |
-| `標題及直排文字` | 標題 + 直排文字 |
-| `直排標題及文字` | 直排標題 + 文字 |
-
-> **提示**：若不確定版面效果，可在生成後用 `read_file` 讀取 `artifacts/pptx_<id>_slide_001.png` 進行視覺確認，再針對性調整。
+**各模板可用的 `__layoutHint` 名稱清單詳見 [`references/templates.md`](references/templates.md)**，使用前用 `read_file("system_skills/pptgenjs/references/templates.md")` 載入即可獲得完整對照表（default.pptx 14 個版面、auo.pptx 6 個版面）。
 
 ### 注意事項
 
@@ -401,42 +462,13 @@ window.__pptxDone(prs);
 
 ---
 
-## 視覺檢查（跑版偵測）
-
-`render_pptx` 回傳時，後端 PNG 縮圖已生成完畢（LibreOffice 轉換在回傳前等待完成）。
-
-**命名規則**：檔名使用回傳訊息中的 `pptx_id`，格式為：
-
-```
-artifacts/pptx_<id>_slide_001.png
-artifacts/pptx_<id>_slide_002.png
-...
-```
-
-`pptx_id` 與總張數出現在 `render_pptx` 的回傳訊息開頭（格式：`[RENDER_PPTX_OK] pptx_id=pptx_a1b2c3d4 slide_count=N`）。
-
-可直接用 `read_file` 開啟對應 PNG 進行視覺確認，無須使用者手動截圖：
-
-```
-read_file("artifacts/pptx_a1b2c3d4_slide_001.png")
-```
-
-當使用者回報**跑版、文字截斷、元素位置錯誤**等問題時，標準流程：
-
-1. 從 `[RENDER_PPTX_OK]` 訊息取得 `pptx_id`
-2. 呼叫 `read_file("artifacts/pptx_<id>_slide_NNN.png")` 確認版面
-3. 根據圖片判斷問題後針對性修正腳本，重新呼叫 `render_pptx`
-
-> 若不確定頁碼，可先用 `list_files("artifacts/")` 列出所有已生成的 PNG 檔名。
-
----
-
 ## 工作流程
 
 1. 確認投影片數量、主題、需要呈現的資料
 2. 若使用者希望套用企業模板，從可用資源清單中取得模板路徑
-3. 規劃每張投影片的目的（封面 / 摘要 / 圖表 / 結尾）
-4. 撰寫完整腳本，結尾呼叫 `window.__pptxDone(prs)`
-5. 呼叫 `render_pptx(pptx_script=..., title=..., slide_count=N[, template_path=...])`
-6. 回傳一句話說明簡報內容，不需逐張解說
-7. 若使用者回報跑版問題，從 `[RENDER_PPTX_OK]` 取得 `pptx_id`，用 `read_file("artifacts/pptx_<id>_slide_NNN.png")` 進行視覺確認後修正
+3. **套用模板前必做**：呼叫 `capture_ppt_slides(ppt_path=<模板路徑>, grid=True)` 檢視模板所有 layout，確認佈景主題、背景明暗、主視覺色、Logo / 裝飾位置與安全內容區，作為後續排版、配色與佈局的依據
+4. 規劃每張投影片的目的（封面 / 摘要 / 圖表 / 結尾），並決定每頁要套用的 layout 名稱
+5. 撰寫完整腳本（沿用模板色系與安全區範圍），結尾呼叫 `window.__pptxDone(prs)`
+6. 呼叫 `render_pptx(pptx_script=..., title=..., slide_count=N[, template_path=...])`
+7. 回傳一句話說明簡報內容，不需逐張解說
+8. **跑版除錯**：從 `render_pptx` 回傳訊息開頭 `[RENDER_PPTX_OK] pptx_id=...` 取得 `pptx_id`，用 `read_file("artifacts/pptx_<id>_slide_NNN.png")` 載入 PNG 縮圖視覺確認後修正。詳細流程見 [`references/debugging.md`](references/debugging.md)。
