@@ -384,17 +384,17 @@ slide.addChart(
 
 ## 企業模板
 
-模板 `.pptx` 放於 `system_skills/pptgenjs/assets/templates/`，啟動此 skill 後即可從可用資源清單中看到路徑。
+模板 `.pptx` 放於 `system_skills/pptgenjs/assets/templates/`，啟動此 skill 後即可從可用資源清單中看到路徑。**不傳 `template_path` 時使用 pptxgenjs 預設樣式，無需執行下述前置流程。**
 
 ### 套用模板前必做：視覺檢查模板佈景主題
 
-> ⚠️ **凡是要套用 `template_path` 的情況，「無論是否熟悉該模板」**，都必須先用 `capture_ppt_slides` 的 **grid 縮圖模式**檢視模板的所有 layout，**確認佈景主題、背景樣式、主視覺顏色、留白區域**之後，才能進行後續排版、配色與佈局設計。理由：模板每個 layout 已內建背景與裝飾元素，若未先確認，腳本中設定的文字顏色、形狀填色、元素位置常會與模板背景衝突（例如深色背景配深色文字、文字壓到 logo）。
+> ⚠️ **使用者明確要求套用某個模板時**（傳了 `template_path`），「無論是否熟悉該模板」都必須先用 `capture_ppt_slides` 的 **grid 縮圖模式**檢視模板的所有 layout，**確認佈景主題、背景樣式、主視覺顏色、留白區域**之後，才能進行後續排版、配色與佈局設計。理由：模板每個 layout 已內建背景與裝飾元素，若未先確認，腳本中設定的文字顏色、形狀填色、元素位置常會與模板背景衝突（例如深色背景配深色文字、文字壓到 logo）。
 
-**標準前置流程**：
+**標準前置流程**（將 `<模板路徑>` 替換為實際要套用的模板）：
 
 ```
 capture_ppt_slides(
-  ppt_path="system_skills/pptgenjs/assets/templates/default.pptx",
+  ppt_path="<模板路徑>",
   grid=True,
   grid_cols=3
 )
@@ -452,7 +452,7 @@ window.__pptxDone(prs);
 
 ### 可用版面名稱
 
-**各模板可用的 `__layoutHint` 名稱清單詳見 [`references/templates.md`](references/templates.md)**，使用前用 `read_file("system_skills/pptgenjs/references/templates.md")` 載入即可獲得完整對照表（default.pptx 14 個版面、auo.pptx 6 個版面）。
+**各模板可用的 `__layoutHint` 名稱清單詳見 [`references/templates.md`](references/templates.md)**，使用前用 `read_file("system_skills/pptgenjs/references/templates.md")` 載入即可獲得完整對照表。
 
 ### 注意事項
 
