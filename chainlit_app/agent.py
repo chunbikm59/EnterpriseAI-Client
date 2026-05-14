@@ -526,6 +526,7 @@ async def run(message_history, initial_msg=None):
         "stream": model_cfg["stream"],
     }
     chat_params["stream_options"] = {"include_usage": True}  # 串流結束時取得 token 用量
+    base_model_setting = {"model": model_cfg["model"], "temperature": model_cfg["temperature"], "stream": False}
 
     _extra_body: dict | None = None
     if model_cfg.get("thinking_budget_tokens_enabled"):
