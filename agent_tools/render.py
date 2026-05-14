@@ -6,7 +6,7 @@ import uuid
 import aiofiles
 from pydantic import Field
 from agent_tools._context import mcp, _session_ctx, _pending_forms, _pending_renders, _pptx_upload_events, get_conversation_folder
-from agent_tools._path_utils import _resolve_file_path, _check_path_in_allowed_roots
+from agent_tools._path_utils import _resolve_file_path, _resolve_user_path, _check_path_in_allowed_roots
 from utils.user_profile import get_user_profile_dir, get_conversation_artifacts_dir
 
 
@@ -292,12 +292,15 @@ async def render_pptx(
         return "錯誤：script_path 不能為空，請先用 write_file 寫入 .js 腳本後再呼叫。"
 
     conv_folder = get_conversation_folder()
-    abs_script_path = _resolve_file_path(script_path, conv_folder)
+    abs_script_path = _resolve_user_path(script_path, user_id, conv_folder)
     allowed_roots = [os.path.realpath(conv_folder)]
     if user_id:
         allowed_roots.append(os.path.realpath(get_user_profile_dir(user_id)))
+    allowed_roots.append(os.path.realpath(os.path.join(_PROJECT_ROOT, "system_skills")))
+    if user_id:
+        allowed_roots.append(os.path.realpath(os.path.join(_PROJECT_ROOT, "user_profiles")))
     if not _check_path_in_allowed_roots(abs_script_path, allowed_roots):
-        return "存取拒絕：只能讀取自己的對話資料夾或使用者目錄。"
+        return "存取拒絕：只能讀取自己的對話資料夾、使用者目錄或 system_skills 目錄。"
 
     if not os.path.isfile(abs_script_path):
         return f"檔案不存在：{script_path}"

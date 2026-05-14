@@ -340,6 +340,36 @@ slide.addChart(
    - `catAxisLabelFormatCode` / `valAxisLabelFormatCode` — 類別軸 / 數值軸標籤格式
 3. **格式碼語法**：遵循 [Microsoft 數字格式代碼規範](https://support.microsoft.com/office/number-format-codes-5026bbd6-04bc-48cd-bf33-80f18b4eae68)（正值;負值;零值;文字）
 
+### 完整範例索引
+
+21 個 pptxgenjs 圖表完整範例存放於 `system_skills/pptgenjs/examples/`，每檔都是可直接餵給 `render_pptx` 的 `pptx_script` 純腳本（已 inline 所有常數與資料，無 import）。需要參考某圖表類型時，用 `read_file` 載入對應範例：
+
+| # | 檔案 | 圖表 | 重點 |
+|---|------|------|------|
+| 01 | `examples/01-bar-basic-titles.js` | 直條 | 完整圖表標題 + 雙軸標題設定 |
+| 02 | `examples/02-bar-variants-2x2.js` | 直條/橫條 | 2×2 grid 對比 bar/col 各種樣式 |
+| 03 | `examples/03-bar-axis-datalabel-grid.js` | 直條/橫條 | 軸與格線樣式變化（catAxisHidden、valGridLine dash）|
+| 04 | `examples/04-bar-stacked-percent-datatable.js` | 堆疊直條 | stacked / percentStacked / 顯示資料表 |
+| 05 | `examples/05-bar-series-colors-formatcode.js` | 直條 | 每根 bar 不同色 + 數字格式碼（百分比、Excel 日期）|
+| 06 | `examples/06-bar-3d-shapes.js` | 3D 直條 | cylinder / pyramid / coneToMax 立體形狀 |
+| 07 | `examples/07-bar-tornado.js` | 龍捲風圖 | 左右對稱橫條（用負值 + stacked + valueBarColors）|
+| 08 | `examples/08-line-fedi-mau.js` | 折線 | 單系列 + lineDataSymbol 標記樣式 |
+| 09 | `examples/09-line-smoothing-symbol-shadow.js` | 折線 | 平滑、線寬、符號大小、陰影 |
+| 10 | `examples/10-line-data-symbols.js` | 折線 | 7 種 lineDataSymbol 符號類型 |
+| 11 | `examples/11-area-stacked.js` | 區域 | Area 與 Stacked Area（chartColorsOpacity 半透明）|
+| 12 | `examples/12-pie-legend-title-positions.js` | 圓餅 | 6 種 legend / title 位置組合 |
+| 13 | `examples/13-doughnut-holesize-shadow.js` | 甜甜圈 | holeSize + 內陰影 |
+| 14 | `examples/14-scatter-xy.js` | 散佈 | XY Scatter + dataLabel（首個 series 為 X 軸）|
+| 15 | `examples/15-bubble-and-bubble3d.js` | 氣泡 | Bubble 與 Bubble3D（系列需含 sizes）|
+| 16 | `examples/16-radar-three-styles.js` | 雷達 | standard / marker / filled 三種樣式 |
+| 17 | `examples/17-multilevel-cats-2levels.js` | 多種類型 | 2 層類別軸（labels 改為 2D 陣列、4 種圖表）|
+| 18 | `examples/18-multilevel-cats-3levels.js` | 直條 | 3 層類別軸（labels 為 3D 陣列）|
+| 19 | `examples/19-combo-bar-line-ev-sales.js` | 組合 | 直條+折線、雙數值軸（valAxes 陣列）|
+| 20 | `examples/20-combo-various-options.js` | 組合 | 4 種組合：col+area+line、stacked+line、stacked+dot、col+bar |
+| 21 | `examples/21-misc-shadow-transparent.js` | 綜合 | 多種陰影效果、`chartColors: ["transparent", ...]` 透明系列 |
+
+> 範例皆使用 `LAYOUT_WIDE`（13.3 × 7.5）。需要其他版面時，調整檔頭 `prs.layout = "..."` 並按比例縮放座標。
+
 ---
 
 ## 常見錯誤（務必避免）
